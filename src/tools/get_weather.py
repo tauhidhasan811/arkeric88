@@ -3,4 +3,4 @@ import random
 @tool
 def get_current_weather():
     """Get Current weather / or temperature"""
-    return random.randint(20, 700)
+    return random.randint(18, 60)

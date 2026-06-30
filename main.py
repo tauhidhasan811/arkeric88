@@ -6,7 +6,7 @@ result = graph.invoke(
     {
         "messages": [
             HumanMessage(
-                content="Hello!"
+                content="tell about the weather today "
             )
         ]
     }

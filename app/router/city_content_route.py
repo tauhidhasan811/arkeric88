@@ -1,9 +1,14 @@
 from fastapi import APIRouter, HTTPException
 from src.core.prompt_templete import PromptGenerator
 from src.service.chat_services import get_ai_response
-from app.schemas.city_body import InputData, RegenerateInputData, RegenerateActivityInputData
+from app.schemas.city_body import (
+    InputData,
+    RegenerateInputData,
+    RegenerateActivityInputData,
+    TourPlanRequestData,
+)
 from src.core.data_processor import ProcessData
-from session.city_session_store import CitySessionStore, ActivitySessionStore
+from src.session.city_session_store import CitySessionStore, ActivitySessionStore
 
 router = APIRouter()
 
@@ -127,10 +132,7 @@ async def regenerate_suggested_city(regenerate_data: RegenerateInputData):
 # ==================== ACTIVITY/TOUR PLAN FLOW ====================
 
 @router.post("/get_tour_plan")
-async def get_tour_plan(
-    session_id: str,
-    selected_city: str,  # Which city from suggestions user selected
-):
+async def get_tour_plan(request_data: TourPlanRequestData):
     """
     GENERATE: First time → create day-wise activity plan for selected city.
     - Creates separate activity session (linked to city session).
@@ -138,15 +140,15 @@ async def get_tour_plan(
     - Returns activity_session_id for future regenerate calls.
     """
     # Fetch parent city session
-    city_session = CitySessionStore.get(session_id)
+    city_session = CitySessionStore.get(request_data.session_id)
     if city_session is None:
         raise HTTPException(status_code=404, detail="City session not found.")
     
     try:
         # Check if activity session already exists for this city (to avoid re-generation)
         activity_session = ActivitySessionStore.get_by_city(
-            session_id=session_id,
-            city_name=selected_city,
+            session_id=request_data.session_id,
+            city_name=request_data.selected_city,
         )
         
         if activity_session is not None:
@@ -161,7 +163,7 @@ async def get_tour_plan(
         # No cached activities → call AI to generate
         prompt = PromptGenerator.gen_tour_plan_prompt(
             questions_answers=city_session.questions_answers,
-            selected_city=selected_city,
+            selected_city=request_data.selected_city,
             trip_length_days=city_session.questions_answers.trip_length_days,
         )
         
@@ -170,8 +172,8 @@ async def get_tour_plan(
         
         # Create new activity session
         activity_session = ActivitySessionStore.create(
-            parent_session_id=session_id,
-            city_name=selected_city,
+            parent_session_id=request_data.session_id,
+            city_name=request_data.selected_city,
             tour_plan=response.get("tour_plan", []),
             response=response,
         )
@@ -257,11 +259,11 @@ async def get_session_details(session_id: str):
     session = CitySessionStore.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
-    
+
     return {
         "session_id": session.session_id,
-        "questions_answers": session.questions_answers.dict(),
-        "suggested_cities": session.suggested_cities,
+        "questions_answers": session.questions_answers.model_dump(),
+        "suggested_cities": [city.model_dump() for city in session.suggested_cities],
         "regeneration_history": session.history,
     }
 
@@ -272,12 +274,12 @@ async def get_activity_session_details(activity_session_id: str):
     session = ActivitySessionStore.get(activity_session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Activity session not found.")
-    
+
     return {
         "activity_session_id": session.activity_session_id,
         "parent_session_id": session.parent_session_id,
         "city": session.city,
-        "tour_plan": session.tour_plan,
+        "tour_plan": [day.model_dump() for day in session.tour_plan],
         "regeneration_history": session.history,
     }
 
@@ -287,10 +289,9 @@ async def delete_session(session_id: str):
     """Delete a city session and all linked activity sessions."""
     if not CitySessionStore.delete(session_id):
         raise HTTPException(status_code=404, detail="Session not found.")
-    
-    # Also delete all activity sessions linked to this city session
+
     ActivitySessionStore.delete_by_parent(session_id)
-    
+
     return {"message": "Session and all linked activity sessions deleted successfully."}
 
 
@@ -299,5 +300,5 @@ async def delete_activity_session(activity_session_id: str):
     """Delete an activity session (does NOT delete parent city session)."""
     if not ActivitySessionStore.delete(activity_session_id):
         raise HTTPException(status_code=404, detail="Activity session not found.")
-    
+
     return {"message": "Activity session deleted successfully."}

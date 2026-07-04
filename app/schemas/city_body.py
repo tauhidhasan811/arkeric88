@@ -73,6 +73,12 @@ class TourPlanDayInput(BaseModel):
     activities: List[TourPlanActivityInput]
 
 
+class TourPlanRequestData(BaseModel):
+    """Request payload for generating a day-wise tour plan for a chosen city."""
+    session_id: str
+    selected_city: str
+
+
 class TourPlanInput(BaseModel):
     """Complete tour plan (all days)."""
     suggested_city: "CitySuggestionInput"

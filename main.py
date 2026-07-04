@@ -1,17 +1,5 @@
-from langchain_core.messages import HumanMessage
+from app.router.city_content_route import router as city_content_router
+from fastapi import FastAPI
 
-from src.graph.graph import graph
-
-result = graph.invoke(
-    {
-        "messages": [
-            HumanMessage(
-                content="can you give me one single image link of dhaka city "
-            )
-        ]
-    }
-)
-
-print(
-    result["messages"][-1].content
-)
+app = FastAPI(title="Travel Planner API", version="1.0.0")
+app.include_router(city_content_router)

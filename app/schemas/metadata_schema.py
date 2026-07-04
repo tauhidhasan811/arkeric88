@@ -1,6 +1,6 @@
 from typing import List, Optional, Literal, Dict
 from pydantic import BaseModel
-from app.schemas.chat_body import QuestionAnswers
+from app.schemas.city_body import QuestionAnswers
 
 
 class CitySuggestion(BaseModel):

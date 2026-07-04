@@ -1,93 +1,74 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, List, Optional
 from uuid import uuid4
-from typing import List
 
-from datetime import date
-
-class QuestionAnswers():
-
-    todays_feeling: str
-
-    experience_kind: str
-
-    energy_level: str
-
-    travel_style: str
-
-    trip_organization: str
-
-    activity_restrictions: list[str]
-    life_season: str
-
-    preferred_environments: list[str]
-
-    birthdate: date
-
-    budget_per_person_per_night: float
-    trip_length_days: int
+from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput
 
 
+# ==================== CITY SESSION ====================
 
 @dataclass
-class CitySuggestion:
-    city_name: str
-    country_name: str
-    number_of_days: int
-
-
-@dataclass
-class TourPlanActivity:
-    activity_name: str
-    activity_description: str
-    activity_location: str
-    activity_time: str
-    activity_cost: float
-
-@dataclass
-class TourPlanDay():
-    day: int
-    activities: List[TourPlanActivity]
-
-
-
-
-@dataclass
-class CitySuggestionResponse():
+class CitySession:
+    """Session for city suggestions (parent session)."""
+    session_id: str
     questions_answers: QuestionAnswers
-    suggested_cities: List[CitySuggestion]
-
-@dataclass
-class TourPlanResponse():
-    questions_answers: QuestionAnswers
-    suggested_citie: CitySuggestion
-    suggested_tour_plan: List[TourPlanDay]
+    suggested_cities: List[CitySuggestionInput]
+    response: dict  # Full AI response
+    created_at: str
+    updated_at: str
+    history: List[dict] = field(default_factory=list)  # Track regenerations
 
 
 class CitySessionStore:
-    _sessions: dict[str, CitySuggestionResponse] = {}
+    """In-memory store for city suggestion sessions."""
+    _sessions: dict[str, CitySession] = {}
 
     @classmethod
-    def create(cls, questions_answers, suggested_cities, response ) -> CitySuggestionResponse:
+    def create(
+        cls,
+        questions_answers: QuestionAnswers,
+        suggested_cities: List[Any],
+        response: dict,
+    ) -> CitySession:
+        """
+        Create a new city session.
+        Called when user generates city suggestions for first time.
+        """
         session_id = str(uuid4())
-        session =  CitySuggestionResponse(
-                session_id=session_id,
-                questions_answers=questions_answers,
-                suggested_cities=suggested_cities)
-        history = [{
-            "action": "generated city suggestions",
-            "response": deepcopy(response),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ],
+        now = datetime.now(timezone.utc).isoformat()
+        
+        session = CitySession(
+            session_id=session_id,
+            questions_answers=questions_answers,
+            suggested_cities=[
+                CitySuggestionInput(
+                    city_name=city.get("city_name"),
+                    country_name=city.get("country_name"),
+                    number_of_days=city.get("number_of_days"),
+                    description=city.get("description"),
+                )
+                for city in suggested_cities
+            ],
+            response=deepcopy(response),
+            created_at=now,
+            updated_at=now,
+            history=[
+                {
+                    "action": "generated",
+                    "timestamp": now,
+                    "suggested_cities_count": len(suggested_cities),
+                }
+            ],
         )
+        
         cls._sessions[session_id] = session
         return deepcopy(session)
 
     @classmethod
-    def get(cls, session_id: str) -> CitySessionStore | None:
+    def get(cls, session_id: str) -> Optional[CitySession]:
+        """Retrieve a city session by ID."""
         session = cls._sessions.get(session_id)
         if session is None:
             return None
@@ -97,27 +78,255 @@ class CitySessionStore:
     def update_response(
         cls,
         session_id: str,
-        response: dict[str, Any],
+        response: dict,
         update_field_name: str,
         user_instruction: str,
-    ) -> CitySessionStore | None:
+    ) -> Optional[CitySession]:
+        """
+        Update session with new AI response (on regenerate).
+        Called when user regenerates city suggestions.
+        """
         session = cls._sessions.get(session_id)
         if session is None:
             return None
 
+        # Extract new suggested cities from response
+        new_cities = response.get("suggested_cities", [])
+        session.suggested_cities = [
+            CitySuggestionInput(
+                city_name=city.get("city_name"),
+                country_name=city.get("country_name"),
+                number_of_days=city.get("number_of_days"),
+                description=city.get("description"),
+            )
+            for city in new_cities
+        ]
+
+        # Update response and timestamp
         session.response = deepcopy(response)
-        session.updated_at = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+        session.updated_at = now
+
+        # Track regeneration in history
         session.history.append(
             {
-                "action": "regenerate",
+                "action": "regenerated",
+                "timestamp": now,
                 "update_field_name": update_field_name,
                 "user_instruction": user_instruction,
-                "response": deepcopy(response),
-                "created_at": session.updated_at,
+                "suggested_cities_count": len(new_cities),
             }
         )
+
         return deepcopy(session)
 
     @classmethod
     def delete(cls, session_id: str) -> bool:
+        """Delete a city session."""
         return cls._sessions.pop(session_id, None) is not None
+
+    @classmethod
+    def list_all(cls) -> List[CitySession]:
+        """List all active city sessions (for debugging)."""
+        return [deepcopy(s) for s in cls._sessions.values()]
+
+
+# ==================== ACTIVITY SESSION ====================
+
+@dataclass
+class ActivitySession:
+    """Session for day-wise activities (child session, linked to city session)."""
+    activity_session_id: str
+    parent_session_id: str  # Link to CitySession
+    city: str
+    tour_plan: List[TourPlanDayInput]
+    response: dict  # Full AI response
+    created_at: str
+    updated_at: str
+    history: List[dict] = field(default_factory=list)  # Track regenerations
+
+
+class ActivitySessionStore:
+    """In-memory store for activity/tour plan sessions."""
+    _sessions: dict[str, ActivitySession] = {}
+
+    @classmethod
+    def create(
+        cls,
+        parent_session_id: str,
+        city_name: str,
+        tour_plan: List[Any],
+        response: dict,
+    ) -> ActivitySession:
+        """
+        Create a new activity session.
+        Called when user generates tour plan for selected city for first time.
+        """
+        activity_session_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        
+        session = ActivitySession(
+            activity_session_id=activity_session_id,
+            parent_session_id=parent_session_id,
+            city=city_name,
+            tour_plan=[
+                TourPlanDayInput(
+                    day=day.get("day"),
+                    activities=[
+                        {
+                            "activity_name": act.get("activity_name"),
+                            "activity_description": act.get("activity_description"),
+                            "activity_location": act.get("activity_location"),
+                            "activity_time": act.get("activity_time"),
+                            "activity_cost": act.get("activity_cost"),
+                        }
+                        for act in day.get("activities", [])
+                    ],
+                )
+                for day in tour_plan
+            ],
+            response=deepcopy(response),
+            created_at=now,
+            updated_at=now,
+            history=[
+                {
+                    "action": "generated",
+                    "timestamp": now,
+                    "city": city_name,
+                    "days_count": len(tour_plan),
+                }
+            ],
+        )
+        
+        cls._sessions[activity_session_id] = session
+        return deepcopy(session)
+
+    @classmethod
+    def get(cls, activity_session_id: str) -> Optional[ActivitySession]:
+        """Retrieve an activity session by ID."""
+        session = cls._sessions.get(activity_session_id)
+        if session is None:
+            return None
+        return deepcopy(session)
+
+    @classmethod
+    def get_by_city(
+        cls,
+        session_id: str,
+        city_name: str,
+    ) -> Optional[ActivitySession]:
+        """
+        Retrieve activity session by parent session ID and city name.
+        Used to check if activities already exist for this city (caching).
+        """
+        for session in cls._sessions.values():
+            if session.parent_session_id == session_id and session.city == city_name:
+                return deepcopy(session)
+        return None
+
+    @classmethod
+    def update_response(
+        cls,
+        activity_session_id: str,
+        response: dict,
+        day_to_regenerate: Optional[int] = None,
+        user_instruction: str = "",
+    ) -> Optional[ActivitySession]:
+        """
+        Update session with new AI response (on regenerate).
+        Called when user regenerates activities.
+        - If day_to_regenerate is None: regenerate entire plan.
+        - If day_to_regenerate is int: regenerate only that day.
+        """
+        session = cls._sessions.get(activity_session_id)
+        if session is None:
+            return None
+
+        new_tour_plan = response.get("tour_plan", [])
+
+        if day_to_regenerate is None:
+            # Regenerate entire plan
+            session.tour_plan = [
+                TourPlanDayInput(
+                    day=day.get("day"),
+                    activities=[
+                        {
+                            "activity_name": act.get("activity_name"),
+                            "activity_description": act.get("activity_description"),
+                            "activity_location": act.get("activity_location"),
+                            "activity_time": act.get("activity_time"),
+                            "activity_cost": act.get("activity_cost"),
+                        }
+                        for act in day.get("activities", [])
+                    ],
+                )
+                for day in new_tour_plan
+            ]
+        else:
+            # Regenerate single day
+            for new_day in new_tour_plan:
+                if new_day.get("day") == day_to_regenerate:
+                    # Find and replace the day in existing plan
+                    for i, existing_day in enumerate(session.tour_plan):
+                        if existing_day.day == day_to_regenerate:
+                            session.tour_plan[i] = TourPlanDayInput(
+                                day=new_day.get("day"),
+                                activities=[
+                                    {
+                                        "activity_name": act.get("activity_name"),
+                                        "activity_description": act.get("activity_description"),
+                                        "activity_location": act.get("activity_location"),
+                                        "activity_time": act.get("activity_time"),
+                                        "activity_cost": act.get("activity_cost"),
+                                    }
+                                    for act in new_day.get("activities", [])
+                                ],
+                            )
+                            break
+
+        # Update response and timestamp
+        session.response = deepcopy(response)
+        now = datetime.now(timezone.utc).isoformat()
+        session.updated_at = now
+
+        # Track regeneration in history
+        scope = f"day {day_to_regenerate}" if day_to_regenerate else "entire itinerary"
+        session.history.append(
+            {
+                "action": "regenerated",
+                "timestamp": now,
+                "scope": scope,
+                "user_instruction": user_instruction,
+            }
+        )
+
+        return deepcopy(session)
+
+    @classmethod
+    def delete(cls, activity_session_id: str) -> bool:
+        """Delete an activity session."""
+        return cls._sessions.pop(activity_session_id, None) is not None
+
+    @classmethod
+    def delete_by_parent(cls, parent_session_id: str) -> int:
+        """Delete all activity sessions linked to a parent city session."""
+        to_delete = [
+            sid for sid, s in cls._sessions.items()
+            if s.parent_session_id == parent_session_id
+        ]
+        for sid in to_delete:
+            cls._sessions.pop(sid, None)
+        return len(to_delete)
+
+    @classmethod
+    def list_by_parent(cls, parent_session_id: str) -> List[ActivitySession]:
+        """List all activity sessions for a given city session."""
+        return [
+            deepcopy(s) for s in cls._sessions.values()
+            if s.parent_session_id == parent_session_id
+        ]
+
+    @classmethod
+    def list_all(cls) -> List[ActivitySession]:
+        """List all active activity sessions (for debugging)."""
+        return [deepcopy(s) for s in cls._sessions.values()]

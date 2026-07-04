@@ -1,251 +1,265 @@
 import json
+from typing import List, Optional
+from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput
 
 
 class PromptGenerator:
+    """Generate prompts for AI to suggest cities and create tour plans."""
 
-    OUTPUT_FORMAT = {
-        "file_name": "SEO-friendly lowercase hyphenated filename without extension (e.g., 'nike-air-max-running-shoe-red')",
-        "title": "Short, compelling product or image title (e.g., 'Nike Air Max - Mens Red Running Shoe')",
-        "caption": "One-sentence engaging social media caption for this image",
-        "SEO_keywords": ["list", "of", "5-10", "relevant", "SEO", "keywords"],
-        "description": "2-3 sentence detailed product/image description optimized for SEO",
-        "assign_location": {
-            "GPSLatitude": 'float', 
-            "GPSLatitudeRef": "N or S", 
-            "GPSLongitude": 'float', 
-            "GPSLongitudeRef": "E or W"
-        },
-
-        "gmb_post": {
-            "title": (
-                "Short catchy title. MUST include company name and city if known. "
-                "Example: 'Expert Appliance Repair Fixed Frigidaire Refrigerator in Las Vegas'"
-            ),
-
-            "intro": (
-                "One engaging opening sentence. MUST naturally mention company name "
-                "and city/location."
-            ),
-
-            "body": (
-                "2-3 SEO optimized sentences describing the service/product. "
-                "MUST mention company name and city at least once."
-            ),
-
-            "features": [
-                "Key feature or benefit"
-                # 3-5 items
-            ],
-
-            "closing": (
-                "One sentence summarizing benefits. "
-                "If company name or city is known, include them naturally."
-            ),
-
-            "cta": (
-                "Call-to-action with phone emoji. "
-                "Mention company name if possible."
-            ),
-
-            "hashtags": [
-                "#RelevantHashtag"
-                # Include company, city, service, and industry hashtags.
-                # Example:
-                # #ExpertApplianceRepair
-                # #LasVegas
-                # #RefrigeratorRepair
-                # #FrigidaireRepair
-            ]
-        }
-    }
-
-
+    # ==================== CITY SUGGESTION PROMPTS ====================
 
     @staticmethod
-    def _text_message(role: str, text: str) -> dict:
-        return {
-            "role": role,
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": text
-                }
-            ]
-        }
-
-    @staticmethod
-    def InitialPrompt() -> list:
-        return [
-            PromptGenerator._text_message(
-                "system",
-                "You are a helpful assistant. Be concise, friendly, and accurate."
-            ),
-            PromptGenerator._text_message(
-                "user",
-                "Start the conversation with a short helpful greeting."
-            )
-        ]
-
-    @staticmethod
-    def GeneralPrompt(
-        user_query: str,
-        relevent_info=None,
-        previous_chat=None,
-        file_data=None
-    ) -> list:
-        file_context = "No uploaded file data."
-        if file_data and file_data.get("is_read"):
-            file_context = file_data.get("data", "")
-
-        return [
-            PromptGenerator._text_message(
-                "system",
-                (
-                    "You are a helpful assistant. Use previous conversation, relevant "
-                    "knowledge, and uploaded file content when they help answer the user."
-                )
-            ),
-            PromptGenerator._text_message(
-                "user",
-                (
-                    f"Previous conversation:\n{previous_chat or 'No previous conversation.'}\n\n"
-                    f"Relevant knowledge:\n{relevent_info or 'No relevant knowledge.'}\n\n"
-                    f"Uploaded file content:\n{file_context}\n\n"
-                    f"User request:\n{user_query}"
-                )
-            )
-        ]
-
-    @staticmethod
-    def _build_system_instruction(assign_location: str, company_name: str, preference_instructions: str) -> str:
-        schema = json.dumps(PromptGenerator.OUTPUT_FORMAT, indent=2)
-        return (
-            "You are an expert image analyst and SEO content specialist.\n"
-            "When given an image, extract structured marketing and SEO metadata from it.\n"
-            f" My Company Name is : {company_name}"
-            "Your response tone should be user given preference instructions: " + preference_instructions + "\n"
-            "Always respond with a single valid JSON object - no markdown, no explanation, no extra text.\n"
-            "User provided assign_location for GPS metadata: " + assign_location + "\n"
-            "Your response must strictly follow this JSON schema:\n"
-            f"{schema}\n"
-            "Rules:\n"
-            "- Every field is required. Never omit a field.\n"
-            "- SEO_keywords must be a JSON array of 5 to 10 strings.\n"
-            "- file_name must be lowercase, hyphen-separated, and contain no spaces or special characters.\n"
-            "- If a field cannot be determined from the image, use the string 'Unknown'.\n"
-            "- Output must be parseable by Python's json.loads()."
-            "Additional GMB Post Rules:\n"
-            "- GMB posts must be written in a local SEO style.\n"
-            "- ALWAYS include the company/business name if it can be determined.\n"
-            "- ALWAYS include the city/location name if it can be determined.\n"
-            "- The GMB title MUST contain both company name and city whenever available.\n"
-            "- Prefer action-oriented titles such as:\n"
-            "  * '{Company} Fixed {Brand} {Product} in {City}'\n"
-            "  * '{Company} Repaired {Product} in {City}'\n"
-            "  * '{Company} Installed {Product} in {City}'\n"
-            "- The intro and body must naturally repeat the company name and city for local SEO.\n"
-            "- Hashtags should include company name, city, service type, product type, and industry terms.\n"
-            "- If company name or city cannot be determined, use 'Unknown' for missing fields.\n"
-        )
-
-    @staticmethod
-    def gen_prompt(image_url: str, company_name: str, assign_location: str, preference_instructions: str) -> list:
+    def gen_city_suggestion_prompt(
+        questions_answers: QuestionAnswers,
+        preferred_destinations: Optional[str] = None,
+        hope_of_this_trip: str = "",
+    ) -> str:
         """
-        Generates the initial prompt to analyze an image and return structured JSON metadata.
+        Generate prompt to suggest cities based on user's Q&A.
+        
+        First time flow: User answers all questions → AI recommends best cities.
         """
-        return [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": PromptGenerator._build_system_instruction(assign_location=assign_location, 
-                                                                          company_name = company_name,
-                                                                          preference_instructions=preference_instructions)
-                    }
-                ]
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": (
-                            "Analyze the image below and return a single JSON object "
-                            "with all required fields filled in based on what you see."
-                        )
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": image_url
-                    }
-                ]
-            }
-        ]
+        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
+        
+        additional_context = ""
+        if preferred_destinations:
+            additional_context += f"\nPreferred regions/types: {preferred_destinations}"
+        if hope_of_this_trip:
+            additional_context += f"\nWhat they hope to achieve: {hope_of_this_trip}"
+        
+        prompt = f"""
+You are an expert travel advisor. Based on the user's profile and preferences below, 
+suggest the 3-5 BEST cities/destinations that match their needs.
 
-    @staticmethod
-    def regenerate_prompt(
-        previous_response: dict,
-        update_field_name: str,
-        user_instruction: str | None,
-        image_url: str ) -> list:
-        """
-        Generates a prompt to update a specific field in a previous response.
+USER PROFILE:
+{qa_summary}
+{additional_context}
 
-        Args:
-            previous_response:  The full JSON dict returned from the previous gen_prompt call.
-            update_field_name:  The exact field key to update (e.g., 'caption', 'gmb_post').
-            user_instruction:   The user's specific instruction for how to change that field.
-            image_url:          The original image URL for visual context.
-        """
-        valid_fields = list(PromptGenerator.OUTPUT_FORMAT.keys())
-        if update_field_name not in valid_fields:
-            raise ValueError(
-                f"Invalid field '{update_field_name}'. Must be one of: {valid_fields}"
-            )
+REQUIREMENTS:
+1. Suggest cities that align with their feeling, energy level, travel style, and environment preferences.
+2. Respect budget constraints (${questions_answers.budget_per_person_per_night}/night).
+3. Consider trip duration ({questions_answers.trip_length_days} days).
+4. Avoid activities they restricted/cannot do.
+5. Match the "season of life" they're in emotionally.
 
-        previous_json = json.dumps(previous_response, indent=2)
-        instruction = (
-            user_instruction
-            or f"Regenerate '{update_field_name}' with a fresh, accurate, SEO-friendly alternative."
-        )
+RESPONSE FORMAT (JSON ONLY):
+{{
+    "suggested_cities": [
+        {{
+            "city_name": "City Name",
+            "country_name": "Country",
+            "number_of_days": <recommended number of days>,
+            "description": "<1-2 sentence explanation of why this city matches their profile>"
+        }}
+    ],
+    "reasoning": "<Overall reasoning for these suggestions>"
+}}
 
-        prompt =  [ {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": (
-                            "You are an expert image analyst and SEO content specialist.\n"
-                            "You will receive a previously generated JSON metadata object and a user instruction "
-                            "to update exactly ONE specific field.\n"
-                            f"Rules:\n"
-                            f"- Update ONLY the '{update_field_name}' field.\n"
-                            "- Copy all other fields EXACTLY as they appear in the previous response.\n"
-                            "- Apply the user's instruction precisely to generate the new value.\n"
-                            "- Return a single valid JSON object with all fields present.\n"
-                            "- No markdown, no explanation, no extra text - only the JSON object.\n"
-                            "- Output must be parseable by Python's json.loads()."
-                        )
-                    }
-                ]
-            },
-            { "role": "user",
-                "content": [ {
-                        "type": "input_text",
-                        "text": (
-                            f"Previous JSON response:\n{previous_json}\n\n"
-                            f"Field to update: '{update_field_name}'\n"
-                            f"User instruction: {instruction}\n\n"
-                            f"Return the full updated JSON object with only '{update_field_name}' changed."
-                        )
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": image_url
-                    }
-                ]
-            }
-        ]
-
+Respond ONLY with valid JSON, no preamble.
+"""
         return prompt
+
+    @staticmethod
+    def regenerate_city_suggestion_prompt(
+        questions_answers: QuestionAnswers,
+        previous_suggestions: List[CitySuggestionInput],
+        user_instruction: str = "",
+    ) -> str:
+        """
+        Generate prompt to get different city suggestions.
+        
+        Regenerate flow: Keep Q&A, suggest different cities (exclude previous ones).
+        """
+        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
+        previous_cities = ", ".join([c.city_name for c in previous_suggestions])
+        
+        instruction_context = ""
+        if user_instruction:
+            instruction_context = f"\nUser's additional instruction: {user_instruction}"
+        
+        prompt = f"""
+You are an expert travel advisor. The user previously received these suggestions:
+{previous_cities}
+
+Now, provide 3-5 DIFFERENT cities that still match their profile.
+
+USER PROFILE:
+{qa_summary}
+{instruction_context}
+
+IMPORTANT:
+1. Do NOT repeat: {previous_cities}
+2. Still match their travel style, budget, and preferences.
+3. Consider alternative environments or regions.
+4. Respect all their constraints.
+
+RESPONSE FORMAT (JSON ONLY):
+{{
+    "suggested_cities": [
+        {{
+            "city_name": "City Name",
+            "country_name": "Country",
+            "number_of_days": <recommended days>,
+            "description": "<1-2 sentence explanation>"
+        }}
+    ],
+    "reasoning": "<Why these are good alternatives>"
+}}
+
+Respond ONLY with valid JSON, no preamble.
+"""
+        return prompt
+
+    # ==================== TOUR PLAN / ACTIVITY PROMPTS ====================
+
+    @staticmethod
+    def gen_tour_plan_prompt(
+        questions_answers: QuestionAnswers,
+        selected_city: str,
+        trip_length_days: int,
+    ) -> str:
+        """
+        Generate prompt for day-wise activity itinerary.
+        
+        Generate flow: User selected a city → AI creates day-by-day activities.
+        """
+        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
+        
+        prompt = f"""
+You are an expert tour planner. Create a detailed {trip_length_days}-day itinerary for {selected_city}.
+
+USER PROFILE:
+{qa_summary}
+
+REQUIREMENTS:
+1. Create {trip_length_days} days of activities.
+2. Match their travel style: {questions_answers.travel_style}
+3. Fit their energy level: {questions_answers.energy_level}
+4. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
+5. AVOID these activities: {', '.join(questions_answers.activity_restrictions)}
+6. Prefer these environments: {', '.join(questions_answers.preferred_environments)}
+7. Include time (start - end), location, cost, and brief description for each activity.
+
+RESPONSE FORMAT (JSON ONLY):
+{{
+    "tour_plan": [
+        {{
+            "day": 1,
+            "activities": [
+                {{
+                    "activity_name": "Activity Name",
+                    "activity_description": "What you'll do",
+                    "activity_location": "Exact location in city",
+                    "activity_time": "HH:MM AM - HH:MM PM",
+                    "activity_cost": <cost in USD>
+                }}
+            ]
+        }}
+    ],
+    "total_cost_estimate": <estimated total for all days>,
+    "packing_tips": "<Brief packing advice for this city>",
+    "travel_tips": "<Brief travel advice>"
+}}
+
+Respond ONLY with valid JSON, no preamble.
+"""
+        return prompt
+
+    @staticmethod
+    def regenerate_tour_plan_prompt(
+        questions_answers: QuestionAnswers,
+        city_name: str,
+        current_tour_plan: List[TourPlanDayInput],
+        day_to_regenerate: Optional[int] = None,
+        user_instruction: str = "",
+    ) -> str:
+        """
+        Generate prompt to get different activities.
+        
+        Regenerate flow: Keep city, regenerate activities (all or single day).
+        """
+        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
+        
+        scope = f"Day {day_to_regenerate}" if day_to_regenerate else "the entire itinerary"
+        instruction_context = ""
+        if user_instruction:
+            instruction_context = f"\nUser's request: {user_instruction}"
+        
+        current_plan_summary = PromptGenerator._build_plan_summary(current_tour_plan)
+        
+        prompt = f"""
+You are an expert tour planner. Regenerate activities for {city_name}.
+Previously suggested itinerary:
+{current_plan_summary}
+
+Now provide DIFFERENT activities for {scope} while keeping the rest the same.
+
+USER PROFILE:
+{qa_summary}
+{instruction_context}
+
+REQUIREMENTS (same as before):
+1. Match travel style: {questions_answers.travel_style}
+2. Match energy level: {questions_answers.energy_level}
+3. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
+4. AVOID: {', '.join(questions_answers.activity_restrictions)}
+5. Include time, location, cost, and description for each activity.
+
+RESPONSE FORMAT (JSON ONLY):
+{{
+    "tour_plan": [
+        {{
+            "day": <day number>,
+            "activities": [
+                {{
+                    "activity_name": "Different Activity Name",
+                    "activity_description": "What you'll do",
+                    "activity_location": "Exact location",
+                    "activity_time": "HH:MM AM - HH:MM PM",
+                    "activity_cost": <cost in USD>
+                }}
+            ]
+        }}
+    ],
+    "reasoning": "<Why these are good alternatives>"
+}}
+
+Respond ONLY with valid JSON, no preamble.
+"""
+        return prompt
+
+    # ==================== HELPER METHODS ====================
+
+    @staticmethod
+    def _build_qa_summary(qa: QuestionAnswers) -> str:
+        """Build human-readable summary of Q&A."""
+        return f"""
+- Current feeling: {qa.todays_feeling}
+- Desired experience: {qa.experience_kind}
+- Energy level: {qa.energy_level}
+- Travel style: {qa.travel_style}
+- Trip organization preference: {qa.trip_organization}
+- Restricted activities: {', '.join(qa.activity_restrictions) if qa.activity_restrictions else 'None'}
+- Season of life: {qa.life_season}
+- Preferred environments: {', '.join(qa.preferred_environments)}
+- Age (from birthdate): {PromptGenerator._calculate_age(qa.birthdate)}
+- Budget per night: ${qa.budget_per_person_per_night}
+- Trip duration: {qa.trip_length_days} days
+"""
+
+    @staticmethod
+    def _build_plan_summary(tour_plan: List[TourPlanDayInput]) -> str:
+        """Build human-readable summary of current tour plan."""
+        summary = ""
+        for day_plan in tour_plan:
+            summary += f"\nDay {day_plan.day}:\n"
+            for activity in day_plan.activities:
+                summary += f"  - {activity.activity_name} ({activity.activity_time}) @ {activity.activity_location} (${activity.activity_cost})\n"
+        return summary
+
+    @staticmethod
+    def _calculate_age(birthdate) -> int:
+        """Calculate age from birthdate."""
+        from datetime import date
+        today = date.today()
+        return today.year - birthdate.year - ((today.month, today.day) < (birthdate.month, birthdate.day))

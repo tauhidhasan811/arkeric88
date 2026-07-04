@@ -6,7 +6,7 @@ result = graph.invoke(
     {
         "messages": [
             HumanMessage(
-                content="tell about the weather today "
+                content="can you give me one single image link of dhaka city "
             )
         ]
     }

@@ -1,4 +1,3 @@
-import json
 from typing import List, Optional
 from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput
 
@@ -40,7 +39,7 @@ class PromptGenerator:
 
             REQUIREMENTS:
             1. Suggest cities that align with their feeling, energy level, travel style, and environment preferences.
-            2. Respect budget constraints (${questions_answers.budget_per_person_per_night}/night).
+            2. Respect budget constraints (${questions_answers.total_trip_budget} total trip budget).
             3. Consider trip duration ({questions_answers.trip_length_days} days).
             4. Avoid activities they restricted/cannot do.
             5. Match the "season of life" they're in emotionally.
@@ -128,36 +127,32 @@ Respond ONLY with valid JSON, no preamble.
         Generate prompt for day-wise activity itinerary.
 
         Generate flow: User selected a city → AI creates day-by-day activities.
+        The LLM only proposes activity names, descriptions, areas, times, and costs.
+        Addresses, images, distances, and hotel info will be filled in by a separate tool step.
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
 
         prompt = f"""
-You are an expert tour planner. Create a detailed {trip_length_days}-day itinerary for {selected_city}.
+You are an expert tour planner. Propose a {trip_length_days}-day itinerary for {selected_city}.
 
 USER PROFILE:
 {qa_summary}
-
-{tool_usage_rules}
 
 REQUIREMENTS:
 1. Create {trip_length_days} days of activities.
 2. Match their travel style: {questions_answers.travel_style}
 3. Fit their energy level: {questions_answers.energy_level}
-4. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
+4. Stay within total trip budget: ${questions_answers.total_trip_budget} for the entire trip.
 5. AVOID these activities: {', '.join(questions_answers.activity_restrictions)}
 6. Prefer these environments: {', '.join(questions_answers.preferred_environments)}
-7. Include time (start - end), location, address, cost, image, and brief description for each activity.
-8. DISTANCE CALCULATION RULE (apply within each day separately):
-   - The FIRST activity of each day has "distance_from_previous_km": 0 (it is the starting point for that day).
-   - Every activity AFTER the first must have its distance calculated from the PREVIOUS activity's location
-     to its own location — NOT from the hotel, city center, or day's starting point.
-     Example: Day 1 has activities A, B, C, D.
-       - A.distance_from_previous_km = 0
-       - B.distance_from_previous_km = distance(A → B)
-       - C.distance_from_previous_km = distance(B → C)
-       - D.distance_from_previous_km = distance(C → D)
-   - Each new day restarts this chain at 0 for its first activity.
+7. For each activity, provide ONLY the activity name, a short description, the rough area/neighborhood in the city,
+   a suggested time window, and an estimated cost in USD.
+
+CRITICAL — Do NOT invent or include these fields. They will be filled by a real data tool later:
+   - Do NOT include an exact street address (no "activity_address" field)
+   - Do NOT include any image URLs (no "activity_image" field)
+   - Do NOT include any distance values (no "distance_from_previous_km" field)
+   Only the fields listed in the RESPONSE FORMAT below should be included.
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -169,16 +164,13 @@ RESPONSE FORMAT (JSON ONLY):
                     "activity_name": "Activity Name",
                     "activity_description": "What you'll do",
                     "activity_location": "Exact location in city",
-                    "activity_address": "Full street address if available",
-                    "activity_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
                     "activity_time": "HH:MM AM - HH:MM PM",
-                    "activity_cost": <cost in USD>,
-                    "distance_from_previous_km": <0 for first activity of the day, otherwise distance from the previous activity>
+                    "activity_cost": <cost in USD>
                 }}
             ]
         }}
     ],
-    "total_cost_estimate": <estimated total for all days>,
+    "total_cost_estimate": <sum of all activity costs across all days>,
     "packing_tips": "<Brief packing advice for this city>",
     "travel_tips": "<Brief travel advice>"
 }}
@@ -199,9 +191,10 @@ Respond ONLY with valid JSON, no preamble.
         Generate prompt to get different activities.
 
         Regenerate flow: Keep city, regenerate activities (all or single day).
+        The LLM only proposes activity names, descriptions, areas, times, and costs.
+        Addresses, images, distances, and hotel info will be filled in by a separate tool step.
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
 
         scope = f"Day {day_to_regenerate}" if day_to_regenerate else "the entire itinerary"
         instruction_context = ""
@@ -221,19 +214,19 @@ USER PROFILE:
 {qa_summary}
 {instruction_context}
 
-{tool_usage_rules}
-
-REQUIREMENTS (same as before):
+REQUIREMENTS:
 1. Match travel style: {questions_answers.travel_style}
 2. Match energy level: {questions_answers.energy_level}
-3. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
+3. Stay within total trip budget: ${questions_answers.total_trip_budget} for the entire trip.
 4. AVOID: {', '.join(questions_answers.activity_restrictions)}
-5. Include time, location, address, image, cost, and description for each activity.
-6. DISTANCE CALCULATION RULE (apply within each regenerated day separately):
-   - The FIRST activity of the day has "distance_from_previous_km": 0.
-   - Every activity AFTER the first must have its distance calculated from the PREVIOUS activity's
-     location to its own location (chained, not from a fixed origin).
-     Example: A.distance_from_previous_km = 0, B = distance(A → B), C = distance(B → C), etc.
+5. For each activity, provide ONLY the activity name, a short description, the rough area/neighborhood,
+   a suggested time window, and an estimated cost in USD.
+
+CRITICAL — Do NOT invent or include these fields. They will be filled by a real data tool later:
+   - Do NOT include an exact street address (no "activity_address" field)
+   - Do NOT include any image URLs (no "activity_image" field)
+   - Do NOT include any distance values (no "distance_from_previous_km" field)
+   Only the fields listed in the RESPONSE FORMAT below should be included.
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -245,11 +238,8 @@ RESPONSE FORMAT (JSON ONLY):
                     "activity_name": "Different Activity Name",
                     "activity_description": "What you'll do",
                     "activity_location": "Exact location",
-                    "activity_address": "Full street address if available",
-                    "activity_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
                     "activity_time": "HH:MM AM - HH:MM PM",
-                    "activity_cost": <cost in USD>,
-                    "distance_from_previous_km": <0 for first activity of the day, otherwise distance from the previous activity>
+                    "activity_cost": <cost in USD>
                 }}
             ]
         }}
@@ -288,7 +278,7 @@ TOOL USAGE FOR IMAGES:
 - Season of life: {qa.life_season}
 - Preferred environments: {', '.join(qa.preferred_environments)}
 - Age (from birthdate): {PromptGenerator._calculate_age(qa.birthdate)}
-- Budget per night: ${qa.budget_per_person_per_night}
+- Total trip budget: ${qa.total_trip_budget}
 - Trip duration: {qa.trip_length_days} days
 """
 

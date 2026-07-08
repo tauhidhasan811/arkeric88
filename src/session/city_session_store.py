@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional
 from uuid import uuid4
 
-from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput
+from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput, StayInfo
 
 
 # ==================== CITY SESSION ====================
@@ -150,6 +150,10 @@ class ActivitySession:
     created_at: str
     updated_at: str
     history: List[dict] = field(default_factory=list)  # Track regenerations
+    stay: Optional[StayInfo] = None  # Hotel/stay info
+    total_cost_estimate: float = 0.0  # Combined hotel + activities total
+    packing_tips: str = ""
+    travel_tips: str = ""
 
 
 class ActivitySessionStore:
@@ -163,6 +167,10 @@ class ActivitySessionStore:
         city_name: str,
         tour_plan: List[Any],
         response: dict,
+        stay_data: Optional[dict] = None,
+        total_cost_estimate: float = 0.0,
+        packing_tips: str = "",
+        travel_tips: str = "",
     ) -> ActivitySession:
         """
         Create a new activity session.
@@ -170,6 +178,18 @@ class ActivitySessionStore:
         """
         activity_session_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        
+        # Build stay object from raw data if provided
+        stay_obj = None
+        if stay_data:
+            stay_obj = StayInfo(
+                name=stay_data.get("name", "N/A"),
+                address=stay_data.get("address", "N/A"),
+                rating=stay_data.get("rating", 0.0),
+                price_level=stay_data.get("price_level", "NOT_AVAILABLE"),
+                photos=stay_data.get("photos", []),
+                coords=stay_data.get("coords"),
+            )
         
         session = ActivitySession(
             activity_session_id=activity_session_id,
@@ -183,8 +203,11 @@ class ActivitySessionStore:
                             "activity_name": act.get("activity_name"),
                             "activity_description": act.get("activity_description"),
                             "activity_location": act.get("activity_location"),
+                            "activity_address": act.get("activity_address", "N/A"),
+                            "activity_image": act.get("activity_image", []),
                             "activity_time": act.get("activity_time"),
-                            "activity_cost": act.get("activity_cost"),
+                            "activity_cost": act.get("activity_cost", 0),
+                            "distance_from_previous_km": act.get("distance_from_previous_km"),
                         }
                         for act in day.get("activities", [])
                     ],
@@ -194,12 +217,17 @@ class ActivitySessionStore:
             response=deepcopy(response),
             created_at=now,
             updated_at=now,
+            stay=stay_obj,
+            total_cost_estimate=total_cost_estimate,
+            packing_tips=packing_tips,
+            travel_tips=travel_tips,
             history=[
                 {
                     "action": "generated",
                     "timestamp": now,
                     "city": city_name,
                     "days_count": len(tour_plan),
+                    "total_cost_estimate": total_cost_estimate,
                 }
             ],
         )
@@ -237,6 +265,8 @@ class ActivitySessionStore:
         response: dict,
         day_to_regenerate: Optional[int] = None,
         user_instruction: str = "",
+        stay_data: Optional[dict] = None,
+        total_cost_estimate: Optional[float] = None,
     ) -> Optional[ActivitySession]:
         """
         Update session with new AI response (on regenerate).
@@ -260,8 +290,11 @@ class ActivitySessionStore:
                             "activity_name": act.get("activity_name"),
                             "activity_description": act.get("activity_description"),
                             "activity_location": act.get("activity_location"),
+                            "activity_address": act.get("activity_address", "N/A"),
+                            "activity_image": act.get("activity_image", []),
                             "activity_time": act.get("activity_time"),
-                            "activity_cost": act.get("activity_cost"),
+                            "activity_cost": act.get("activity_cost", 0),
+                            "distance_from_previous_km": act.get("distance_from_previous_km"),
                         }
                         for act in day.get("activities", [])
                     ],
@@ -282,13 +315,31 @@ class ActivitySessionStore:
                                         "activity_name": act.get("activity_name"),
                                         "activity_description": act.get("activity_description"),
                                         "activity_location": act.get("activity_location"),
+                                        "activity_address": act.get("activity_address", "N/A"),
+                                        "activity_image": act.get("activity_image", []),
                                         "activity_time": act.get("activity_time"),
-                                        "activity_cost": act.get("activity_cost"),
+                                        "activity_cost": act.get("activity_cost", 0),
+                                        "distance_from_previous_km": act.get("distance_from_previous_km"),
                                     }
                                     for act in new_day.get("activities", [])
                                 ],
                             )
                             break
+
+        # Update stay if new data provided
+        if stay_data:
+            session.stay = StayInfo(
+                name=stay_data.get("name", "N/A"),
+                address=stay_data.get("address", "N/A"),
+                rating=stay_data.get("rating", 0.0),
+                price_level=stay_data.get("price_level", "NOT_AVAILABLE"),
+                photos=stay_data.get("photos", []),
+                coords=stay_data.get("coords"),
+            )
+
+        # Update total cost estimate if provided
+        if total_cost_estimate is not None:
+            session.total_cost_estimate = total_cost_estimate
 
         # Update response and timestamp
         session.response = deepcopy(response)
@@ -303,6 +354,7 @@ class ActivitySessionStore:
                 "timestamp": now,
                 "scope": scope,
                 "user_instruction": user_instruction,
+                "total_cost_estimate": total_cost_estimate or session.total_cost_estimate,
             }
         )
 

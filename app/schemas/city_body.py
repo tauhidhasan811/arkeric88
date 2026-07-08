@@ -34,8 +34,8 @@ class QuestionAnswers(BaseModel):
     # Your birthdate
     birthdate: date
 
-    # Approximate budget per person/night
-    budget_per_person_per_night: float
+    # Total trip budget (covers hotel + all activities for the entire trip)
+    total_trip_budget: float
 
     # How many days are you planning to travel?
     trip_length_days: int
@@ -56,6 +56,18 @@ class RegenerateInputData(BaseModel):
     user_instruction: str  # User's preference for regeneration (e.g., "more adventure", "budget options")
 
 
+# ==================== STAY / HOTEL SCHEMA ====================
+
+class StayInfo(BaseModel):
+    """Hotel/resort where the user stays during the trip."""
+    name: str
+    address: str
+    rating: float
+    price_level: str
+    photos: List[str] = []
+    coords: Optional[dict] = None
+
+
 # ==================== ACTIVITY/TOUR PLAN REQUEST/RESPONSE ====================
 
 class TourPlanActivityInput(BaseModel):
@@ -63,8 +75,11 @@ class TourPlanActivityInput(BaseModel):
     activity_name: str
     activity_description: str
     activity_location: str
+    activity_address: str = "N/A"
+    activity_image: List[str] = []
     activity_time: str  # e.g., "9:00 AM - 12:00 PM"
-    activity_cost: float
+    activity_cost: float = 0.0
+    distance_from_previous_km: Optional[float] = None
 
 
 class TourPlanDayInput(BaseModel):
@@ -116,7 +131,11 @@ class TourPlanResponse(BaseModel):
     """Response after generating tour plan."""
     activity_session_id: str
     city: str
+    stay: StayInfo
     tour_plan: List[TourPlanDayInput]
+    total_cost_estimate: float = 0.0
+    packing_tips: str = ""
+    travel_tips: str = ""
     response: dict  # Full AI response (for reference)
     source: str  # "generated" or "cached"
 

@@ -56,15 +56,35 @@ class TravelPlannerFlowTests(unittest.TestCase):
         def fake_ai(prompt: str) -> str:
             return next(self.responses)
 
-        with patch("app.router.city_content_route.get_ai_response", side_effect=fake_ai), patch(
-            "app.router.city_content_route.get_cityinfo"
-        ) as mock_tool:
+        with patch("app.router.city_content_route.get_ai_response", side_effect=fake_ai), \
+             patch("app.router.city_content_route.get_cityinfo") as mock_tool, \
+             patch("app.router.city_content_route.get_detailed_tourist_places") as mock_places, \
+             patch("app.router.city_content_route.get_google_hotels_sorted_by_rating") as mock_hotels, \
+             patch("app.router.city_content_route.calculate_distance_routes_api") as mock_distance:
+            
             mock_tool.invoke.return_value = {
                 "city_name": "MockCity",
                 "country": "Mockland",
                 "lat": 46.0,
                 "lng": 2.0,
                 "photos": ["https://example.com/photo.jpg"],
+            }
+            # First call returns Museum (for initial generate), second returns Cafe (for regenerate)
+            mock_places.invoke.side_effect = [
+                [{"name": "Museum", "address": "1 Museum St, Paris", "photos": ["https://example.com/museum.jpg"]}],
+                [{"name": "Cafe Central", "address": "2 Cafe St, Paris", "photos": ["https://example.com/cafe.jpg"]}],
+            ]
+            mock_hotels.invoke.return_value = [{
+                "name": "Hotel Paris",
+                "address": "1 Hotel St, Paris",
+                "rating": 4.5,
+                "price_level": "PRICE_LEVEL_MODERATE",
+                "photos": ["https://example.com/hotel.jpg"],
+                "coords": {"lat": 48.0, "lng": 2.0},
+            }]
+            mock_distance.invoke.return_value = {
+                "distance_km": 2.5,
+                "duration_minutes": 10,
             }
             initial = self.client.post(
                 "/get_suggested_city",
@@ -79,7 +99,7 @@ class TravelPlannerFlowTests(unittest.TestCase):
                         "life_season": "exploration",
                         "preferred_environments": ["cities", "parks"],
                         "birthdate": "1990-01-01",
-                        "budget_per_person_per_night": 120.0,
+                        "total_trip_budget": 1200.0,
                         "trip_length_days": 3,
                     },
                     "preferred_destinations": "europe",
@@ -112,7 +132,7 @@ class TravelPlannerFlowTests(unittest.TestCase):
                 },
             )
             self.assertEqual(plan_regenerated.status_code, 200)
-            self.assertEqual(plan_regenerated.json()["tour_plan"][0]["activities"][0]["activity_name"], "Cafe")
+            self.assertEqual(plan_regenerated.json()["tour_plan"][0]["activities"][0]["activity_name"], "Cafe Central")
 
             details = self.client.get(f"/session/{session_id}")
             self.assertEqual(details.status_code, 200)

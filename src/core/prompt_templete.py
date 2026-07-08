@@ -16,47 +16,54 @@ class PromptGenerator:
     ) -> str:
         """
         Generate prompt to suggest cities based on user's Q&A.
-        
+
         First time flow: User answers all questions → AI recommends best cities.
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        
+        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
+
         additional_context = ""
         if preferred_destinations:
             additional_context += f"\nPreferred regions/types: {preferred_destinations}"
         if hope_of_this_trip:
             additional_context += f"\nWhat they hope to achieve: {hope_of_this_trip}"
-        
+
         prompt = f"""
-You are an expert travel advisor. Based on the user's profile and preferences below, 
-suggest the 3-5 BEST cities/destinations that match their needs.
+            You are an expert travel advisor. Based on the user's profile and preferences below, 
+            suggest the 3-5 BEST cities/destinations that match their needs.
 
-USER PROFILE:
-{qa_summary}
-{additional_context}
+            USER PROFILE:
+            {qa_summary}
+            {additional_context}
 
-REQUIREMENTS:
-1. Suggest cities that align with their feeling, energy level, travel style, and environment preferences.
-2. Respect budget constraints (${questions_answers.budget_per_person_per_night}/night).
-3. Consider trip duration ({questions_answers.trip_length_days} days).
-4. Avoid activities they restricted/cannot do.
-5. Match the "season of life" they're in emotionally.
+            {tool_usage_rules}
 
-RESPONSE FORMAT (JSON ONLY):
-{{
-    "suggested_cities": [
-        {{
-            "city_name": "City Name",
-            "country_name": "Country",
-            "number_of_days": <recommended number of days>,
-            "description": "<1-2 sentence explanation of why this city matches their profile>"
-        }}
-    ],
-    "reasoning": "<Overall reasoning for these suggestions>"
-}}
+            REQUIREMENTS:
+            1. Suggest cities that align with their feeling, energy level, travel style, and environment preferences.
+            2. Respect budget constraints (${questions_answers.budget_per_person_per_night}/night).
+            3. Consider trip duration ({questions_answers.trip_length_days} days).
+            4. Avoid activities they restricted/cannot do.
+            5. Match the "season of life" they're in emotionally.
+            6. For each city, provide a representative image URL, its country, and its latitude/longitude coordinates.
 
-Respond ONLY with valid JSON, no preamble.
-"""
+            RESPONSE FORMAT (JSON ONLY):
+            {{
+                "suggested_cities": [
+                    {{
+                        "city_name": "City Name",
+                        "country_name": "Country",
+                        "city_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
+                        "latitude": <float>,
+                        "longitude": <float>,
+                        "number_of_days": <recommended number of days>,
+                        "description": "<1-2 sentence explanation of why this city matches their profile>"
+                    }}
+                ],
+                "reasoning": "<Overall reasoning for these suggestions>"
+            }}
+
+            Respond ONLY with valid JSON, no preamble.
+            """
         return prompt
 
     @staticmethod
@@ -67,16 +74,17 @@ Respond ONLY with valid JSON, no preamble.
     ) -> str:
         """
         Generate prompt to get different city suggestions.
-        
+
         Regenerate flow: Keep Q&A, suggest different cities (exclude previous ones).
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
+        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
         previous_cities = ", ".join([c.city_name for c in previous_suggestions])
-        
+
         instruction_context = ""
         if user_instruction:
             instruction_context = f"\nUser's additional instruction: {user_instruction}"
-        
+
         prompt = f"""
 You are an expert travel advisor. The user previously received these suggestions:
 {previous_cities}
@@ -87,11 +95,14 @@ USER PROFILE:
 {qa_summary}
 {instruction_context}
 
+{tool_usage_rules}
+
 IMPORTANT:
 1. Do NOT repeat: {previous_cities}
 2. Still match their travel style, budget, and preferences.
 3. Consider alternative environments or regions.
 4. Respect all their constraints.
+5. For each city, provide a representative image URL, its country, and its latitude/longitude coordinates.
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -99,6 +110,9 @@ RESPONSE FORMAT (JSON ONLY):
         {{
             "city_name": "City Name",
             "country_name": "Country",
+            "city_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
+            "latitude": <float>,
+            "longitude": <float>,
             "number_of_days": <recommended days>,
             "description": "<1-2 sentence explanation>"
         }}
@@ -120,16 +134,19 @@ Respond ONLY with valid JSON, no preamble.
     ) -> str:
         """
         Generate prompt for day-wise activity itinerary.
-        
+
         Generate flow: User selected a city → AI creates day-by-day activities.
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        
+        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
+
         prompt = f"""
 You are an expert tour planner. Create a detailed {trip_length_days}-day itinerary for {selected_city}.
 
 USER PROFILE:
 {qa_summary}
+
+{tool_usage_rules}
 
 REQUIREMENTS:
 1. Create {trip_length_days} days of activities.
@@ -138,7 +155,17 @@ REQUIREMENTS:
 4. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
 5. AVOID these activities: {', '.join(questions_answers.activity_restrictions)}
 6. Prefer these environments: {', '.join(questions_answers.preferred_environments)}
-7. Include time (start - end), location, cost, and brief description for each activity.
+7. Include time (start - end), location, address, cost, image, and brief description for each activity.
+8. DISTANCE CALCULATION RULE (apply within each day separately):
+   - The FIRST activity of each day has "distance_from_previous_km": 0 (it is the starting point for that day).
+   - Every activity AFTER the first must have its distance calculated from the PREVIOUS activity's location
+     to its own location — NOT from the hotel, city center, or day's starting point.
+     Example: Day 1 has activities A, B, C, D.
+       - A.distance_from_previous_km = 0
+       - B.distance_from_previous_km = distance(A → B)
+       - C.distance_from_previous_km = distance(B → C)
+       - D.distance_from_previous_km = distance(C → D)
+   - Each new day restarts this chain at 0 for its first activity.
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -150,8 +177,11 @@ RESPONSE FORMAT (JSON ONLY):
                     "activity_name": "Activity Name",
                     "activity_description": "What you'll do",
                     "activity_location": "Exact location in city",
+                    "activity_address": "Full street address if available",
+                    "activity_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
                     "activity_time": "HH:MM AM - HH:MM PM",
-                    "activity_cost": <cost in USD>
+                    "activity_cost": <cost in USD>,
+                    "distance_from_previous_km": <0 for first activity of the day, otherwise distance from the previous activity>
                 }}
             ]
         }}
@@ -175,18 +205,19 @@ Respond ONLY with valid JSON, no preamble.
     ) -> str:
         """
         Generate prompt to get different activities.
-        
+
         Regenerate flow: Keep city, regenerate activities (all or single day).
         """
         qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        
+        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
+
         scope = f"Day {day_to_regenerate}" if day_to_regenerate else "the entire itinerary"
         instruction_context = ""
         if user_instruction:
             instruction_context = f"\nUser's request: {user_instruction}"
-        
+
         current_plan_summary = PromptGenerator._build_plan_summary(current_tour_plan)
-        
+
         prompt = f"""
 You are an expert tour planner. Regenerate activities for {city_name}.
 Previously suggested itinerary:
@@ -198,12 +229,19 @@ USER PROFILE:
 {qa_summary}
 {instruction_context}
 
+{tool_usage_rules}
+
 REQUIREMENTS (same as before):
 1. Match travel style: {questions_answers.travel_style}
 2. Match energy level: {questions_answers.energy_level}
 3. Stay within budget: ${questions_answers.budget_per_person_per_night}/night
 4. AVOID: {', '.join(questions_answers.activity_restrictions)}
-5. Include time, location, cost, and description for each activity.
+5. Include time, location, address, image, cost, and description for each activity.
+6. DISTANCE CALCULATION RULE (apply within each regenerated day separately):
+   - The FIRST activity of the day has "distance_from_previous_km": 0.
+   - Every activity AFTER the first must have its distance calculated from the PREVIOUS activity's
+     location to its own location (chained, not from a fixed origin).
+     Example: A.distance_from_previous_km = 0, B = distance(A → B), C = distance(B → C), etc.
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -215,8 +253,11 @@ RESPONSE FORMAT (JSON ONLY):
                     "activity_name": "Different Activity Name",
                     "activity_description": "What you'll do",
                     "activity_location": "Exact location",
+                    "activity_address": "Full street address if available",
+                    "activity_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
                     "activity_time": "HH:MM AM - HH:MM PM",
-                    "activity_cost": <cost in USD>
+                    "activity_cost": <cost in USD>,
+                    "distance_from_previous_km": <0 for first activity of the day, otherwise distance from the previous activity>
                 }}
             ]
         }}
@@ -229,6 +270,18 @@ Respond ONLY with valid JSON, no preamble.
         return prompt
 
     # ==================== HELPER METHODS ====================
+
+    @staticmethod
+    def _build_tool_usage_guidance() -> str:
+        """Return explicit tool-use guidance for image-related travel data."""
+        return """
+TOOL USAGE FOR IMAGES:
+1. When the request needs real place data, attractions, hotels, or routes, call the relevant tool first.
+2. Preserve the tool's returned `photos` list as an array of image URLs in the final JSON.
+3. Never invent image URLs; only use URLs returned by the tools.
+4. For city suggestions, use `get_cityinfo` and put its `photos` list into `city_image`.
+5. For activities, attractions, and hotels, use the matching place tool and put its `photos` list into the image field.
+"""
 
     @staticmethod
     def _build_qa_summary(qa: QuestionAnswers) -> str:

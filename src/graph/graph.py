@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from src.graph.nodes import chatbot
 from src.graph.state import ChatState
-from src.tools.get_city import get_cityinfo
+from tools.tools import get_cityinfo
 from src.tools.get_weather import get_current_weather
 from langgraph.prebuilt import ToolNode, tools_condition
 

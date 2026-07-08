@@ -1,6 +1,6 @@
 import requests
 from langchain_core.tools import tool
-from src.config import config
+from src.config.config_env import settings  
 
 
 
@@ -29,7 +29,7 @@ def get_cityinfo(city_name: str) -> dict:
     (up to 4 image URLs). Use this tool when you need image lists for a city
     and return the `photos` list as an array of image URLs in the final JSON.
     """
-    api_key = config.Settings.google_api_key
+    api_key = settings.google_api_key
     url = "https://places.googleapis.com/v1/places:searchText"
     headers = {
         "Content-Type": "application/json",
@@ -89,7 +89,7 @@ def get_detailed_tourist_places(location_name: str) -> list[dict]:
     Use this tool to fetch image arrays for attractions and include the
     returned `photos` values in the image field of your response.
     """
-    api_key = config.Settings.google_api_key
+    api_key = settings.google_api_key
     url = "https://places.googleapis.com/v1/places:searchText"
     headers = {
         "Content-Type": "application/json",
@@ -146,7 +146,7 @@ def get_it_companies(location_name: str) -> list[dict]:
     Use this tool when you need real business/place images and preserve the
     `photos` list as an array in the final JSON.
     """
-    api_key = config.Settings.google_api_key
+    api_key = settings.google_api_key
     url = "https://places.googleapis.com/v1/places:searchText"
     headers = {
         "Content-Type": "application/json",
@@ -201,7 +201,7 @@ def get_google_hotels_sorted_by_rating(location_name: str) -> list[dict]:
     Use this tool to gather hotel image arrays and include the returned
     `photos` list in your response instead of inventing URLs.
     """
-    api_key = config.Settings.google_api_key
+    api_key = settings.google_api_key
     url = "https://places.googleapis.com/v1/places:searchText"
     headers = {
         "Content-Type": "application/json",
@@ -263,7 +263,7 @@ def calculate_distance_routes_api(origin_address: str, destination_address: str)
     Returns a dict with: origin, destination, distance_km, duration_hours,
     and duration_minutes.
     """
-    api_key = config.Settings.google_api_key
+    api_key = settings.google_api_key
     if not api_key:
         return {"error": "Missing Google Maps API key."}
  

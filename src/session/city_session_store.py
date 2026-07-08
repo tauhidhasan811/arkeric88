@@ -48,6 +48,9 @@ class CitySessionStore:
                     country_name=city.get("country_name"),
                     number_of_days=city.get("number_of_days"),
                     description=city.get("description"),
+                    city_image=city.get("city_image", []),
+                    latitude=city.get("latitude"),
+                    longitude=city.get("longitude"),
                 )
                 for city in suggested_cities
             ],
@@ -98,6 +101,9 @@ class CitySessionStore:
                 country_name=city.get("country_name"),
                 number_of_days=city.get("number_of_days"),
                 description=city.get("description"),
+                city_image=city.get("city_image", []),
+                latitude=city.get("latitude"),
+                longitude=city.get("longitude"),
             )
             for city in new_cities
         ]

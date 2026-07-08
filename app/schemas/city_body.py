@@ -91,6 +91,9 @@ class CitySuggestionInput(BaseModel):
     country_name: str
     number_of_days: int
     description: Optional[str] = None
+    city_image: List[str] = []
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class RegenerateActivityInputData(BaseModel):

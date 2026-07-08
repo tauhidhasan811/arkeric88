@@ -44,7 +44,7 @@ class PromptGenerator:
             3. Consider trip duration ({questions_answers.trip_length_days} days).
             4. Avoid activities they restricted/cannot do.
             5. Match the "season of life" they're in emotionally.
-            6. For each city, provide a representative image URL, its country, and its latitude/longitude coordinates.
+            6. For each city, provide its real country name (to be verified).
 
             RESPONSE FORMAT (JSON ONLY):
             {{
@@ -52,14 +52,10 @@ class PromptGenerator:
                     {{
                         "city_name": "City Name",
                         "country_name": "Country",
-                        "city_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
-                        "latitude": <float>,
-                        "longitude": <float>,
                         "number_of_days": <recommended number of days>,
                         "description": "<1-2 sentence explanation of why this city matches their profile>"
                     }}
-                ],
-                "reasoning": "<Overall reasoning for these suggestions>"
+                ]
             }}
 
             Respond ONLY with valid JSON, no preamble.
@@ -102,7 +98,7 @@ IMPORTANT:
 2. Still match their travel style, budget, and preferences.
 3. Consider alternative environments or regions.
 4. Respect all their constraints.
-5. For each city, provide a representative image URL, its country, and its latitude/longitude coordinates.
+5. For each city, provide its real country name (to be verified).
 
 RESPONSE FORMAT (JSON ONLY):
 {{
@@ -110,14 +106,10 @@ RESPONSE FORMAT (JSON ONLY):
         {{
             "city_name": "City Name",
             "country_name": "Country",
-            "city_image": ["<image URL from tool output>", "<optional second image URL from tool output>"],
-            "latitude": <float>,
-            "longitude": <float>,
             "number_of_days": <recommended days>,
             "description": "<1-2 sentence explanation>"
         }}
-    ],
-    "reasoning": "<Why these are good alternatives>"
+    ]
 }}
 
 Respond ONLY with valid JSON, no preamble.

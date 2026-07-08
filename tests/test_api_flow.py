@@ -2,8 +2,32 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
 
 import main
+from src.service.chat_services import get_ai_response
+
+
+class FakeLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        self.tools = tools
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        if self.calls == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "get_cityinfo", "args": {"city_name": "Paris"}, "id": "call-1"}
+                ],
+            )
+        return AIMessage(
+            content='{"suggested_cities":[{"city_name":"Paris","country_name":"France","city_image":["https://example.com/paris.jpg"],"latitude":48.8566,"longitude":2.3522,"number_of_days":3,"description":"Romantic"}],"reasoning":"done"}'
+        )
 
 
 class TravelPlannerFlowTests(unittest.TestCase):
@@ -16,11 +40,32 @@ class TravelPlannerFlowTests(unittest.TestCase):
             '{"tour_plan":[{"day":1,"activities":[{"activity_name":"Cafe","activity_description":"Coffee","activity_location":"Center","activity_time":"11:00","activity_cost":10}]}],"reasoning":"updated"}',
         ])
 
+    def test_get_ai_response_executes_tool_calls(self) -> None:
+        fake_llm = FakeLLM()
+
+        with patch("src.service.chat_services.GetOpenAILlm", return_value=fake_llm), patch(
+            "src.service.chat_services.get_cityinfo.invoke", return_value={"photos": ["https://example.com/paris.jpg"]}
+        ) as tool_mock:
+            response = get_ai_response("Suggest a city")
+
+        self.assertIn("Paris", response)
+        self.assertEqual(fake_llm.calls, 2)
+        tool_mock.assert_called_once_with({"city_name": "Paris"})
+
     def test_city_and_tour_session_flow(self) -> None:
         def fake_ai(prompt: str) -> str:
             return next(self.responses)
 
-        with patch("app.router.city_content_route.get_ai_response", side_effect=fake_ai):
+        with patch("app.router.city_content_route.get_ai_response", side_effect=fake_ai), patch(
+            "app.router.city_content_route.get_cityinfo"
+        ) as mock_tool:
+            mock_tool.invoke.return_value = {
+                "city_name": "MockCity",
+                "country": "Mockland",
+                "lat": 46.0,
+                "lng": 2.0,
+                "photos": ["https://example.com/photo.jpg"],
+            }
             initial = self.client.post(
                 "/get_suggested_city",
                 json={

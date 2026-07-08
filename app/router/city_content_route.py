@@ -9,6 +9,7 @@ from app.schemas.city_body import (
 )
 from src.core.data_processor import ProcessData
 from src.session.city_session_store import CitySessionStore, ActivitySessionStore
+from src.tools.tools import get_cityinfo
 
 router = APIRouter()
 
@@ -37,6 +38,69 @@ def _merge_regenerated_field(
     return updated_response
 
 
+def _enrich_city_suggestions(suggested_cities: list) -> list:
+    """
+    Enrich LLM-proposed city suggestions with real data from get_cityinfo tool.
+    
+    For each city in the list:
+    1. Call get_cityinfo with the city name
+    2. Merge the tool's verified country, lat, lng, and photos list into the city dict
+    3. If the tool errors, fall back to empty image list and null coordinates
+    
+    The LLM output should never contain city_image, latitude, or longitude —
+    those are supplied entirely by this enrichment step.
+    """
+    enriched = []
+    for city in suggested_cities:
+        city_name = city.get("city_name", "")
+        if not city_name:
+            continue
+        
+        # Default values in case tool fails
+        tool_country = None
+        tool_photos = []
+        tool_lat = None
+        tool_lng = None
+        
+        try:
+            result = get_cityinfo.invoke({"city_name": city_name})
+            if result and "error" not in result:
+                tool_country = result.get("country")
+                tool_photos = result.get("photos", [])
+                # Ensure photos is always a clean list[str]:
+                # - tool returns ["No photos available"] sentinel when none exist → replace with []
+                # - also guard against bare-string edge case
+                if not isinstance(tool_photos, list):
+                    tool_photos = []
+                else:
+                    # Filter out the "No photos available" sentinel
+                    tool_photos = [p for p in tool_photos if p != "No photos available"]
+                location = result.get("lat")
+                if location is not None:
+                    tool_lat = float(location)
+                location = result.get("lng")
+                if location is not None:
+                    tool_lng = float(location)
+        except Exception:
+            # Tool failure — keep defaults (empty photos, null coords)
+            pass
+        
+        # country_name priority: tool's verified value > LLM's guess
+        merged_country = tool_country if tool_country else city.get("country_name")
+        
+        enriched.append({
+            "city_name": city_name,
+            "country_name": merged_country,
+            "city_image": tool_photos,
+            "latitude": tool_lat,
+            "longitude": tool_lng,
+            "number_of_days": city.get("number_of_days"),
+            "description": city.get("description", ""),
+        })
+    
+    return enriched
+
+
 # ==================== CITY SUGGESTION FLOW ====================
 
 @router.post("/get_suggested_city")
@@ -58,10 +122,16 @@ async def get_suggested_city(input_data: InputData):
         response_text = get_ai_response(prompt)
         response = _parse_ai_response(response_text)
         
-        # Create session and store Q&A + suggestions
+        # Enrich LLM suggestions with real data from get_cityinfo tool
+        raw_cities = response.get("suggested_cities", [])
+        enriched_cities = _enrich_city_suggestions(raw_cities)
+        # Replace LLM-only output with enriched version in the response dict
+        response["suggested_cities"] = enriched_cities
+        
+        # Create session and store Q&A + enriched suggestions
         session = CitySessionStore.create(
             questions_answers=input_data.questions_answers,
-            suggested_cities=response.get("suggested_cities", []),
+            suggested_cities=enriched_cities,
             response=response,
         )
         
@@ -100,6 +170,11 @@ async def regenerate_suggested_city(regenerate_data: RegenerateInputData):
         # Call AI for new suggestions
         response_text = get_ai_response(prompt)
         generated_response = _parse_ai_response(response_text)
+        
+        # Enrich new LLM suggestions with real data from get_cityinfo tool
+        raw_cities = generated_response.get("suggested_cities", [])
+        enriched_cities = _enrich_city_suggestions(raw_cities)
+        generated_response["suggested_cities"] = enriched_cities
         
         # Merge new suggestions into response
         response = _merge_regenerated_field(

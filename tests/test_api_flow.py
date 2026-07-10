@@ -1,9 +1,7 @@
 import unittest
-from unittest.mock import patch
-
+from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
-
 import main
 from src.service.chat_services import get_ai_response
 
@@ -11,11 +9,9 @@ from src.service.chat_services import get_ai_response
 class FakeLLM:
     def __init__(self) -> None:
         self.calls = 0
-
     def bind_tools(self, tools):
         self.tools = tools
         return self
-
     def invoke(self, messages):
         self.calls += 1
         if self.calls == 1:
@@ -39,29 +35,26 @@ class TravelPlannerFlowTests(unittest.TestCase):
             '{"tour_plan":[{"day":1,"activities":[{"activity_name":"Museum","activity_description":"Visit","activity_location":"Louvre","activity_time":"10:00","activity_cost":20}]}],"total_cost_estimate":20,"packing_tips":"light","travel_tips":"walk"}',
             '{"tour_plan":[{"day":1,"activities":[{"activity_name":"Cafe","activity_description":"Coffee","activity_location":"Center","activity_time":"11:00","activity_cost":10}]}],"reasoning":"updated"}',
         ])
-
     def test_get_ai_response_executes_tool_calls(self) -> None:
         fake_llm = FakeLLM()
-
-        with patch("src.service.chat_services.GetOpenAILlm", return_value=fake_llm), patch(
-            "src.service.chat_services.get_cityinfo.invoke", return_value={"photos": ["https://example.com/paris.jpg"]}
-        ) as tool_mock:
+        tool_mock = Mock()
+        tool_mock.invoke.return_value = {"photos": ["https://example.com/paris.jpg"]}
+        with patch("src.service.chat_services.GetOpenAILlm", return_value=fake_llm), patch.dict(
+            "src.service.chat_services.TOOL_BY_NAME", {"get_cityinfo": tool_mock}
+        ):
             response = get_ai_response("Suggest a city")
-
         self.assertIn("Paris", response)
         self.assertEqual(fake_llm.calls, 2)
-        tool_mock.assert_called_once_with({"city_name": "Paris"})
-
+        tool_mock.invoke.assert_called_once_with({"city_name": "Paris"})
     def test_city_and_tour_session_flow(self) -> None:
         def fake_ai(prompt: str) -> str:
             return next(self.responses)
-
         with patch("app.router.city_content_route.get_ai_response", side_effect=fake_ai), \
              patch("app.router.city_content_route.get_cityinfo") as mock_tool, \
              patch("app.router.city_content_route.get_detailed_tourist_places") as mock_places, \
+             patch("app.router.city_content_route.get_nearby_restaurants") as mock_restaurants, \
              patch("app.router.city_content_route.get_google_hotels_sorted_by_rating") as mock_hotels, \
              patch("app.router.city_content_route.calculate_distance_routes_api") as mock_distance:
-            
             mock_tool.invoke.return_value = {
                 "city_name": "MockCity",
                 "country": "Mockland",
@@ -74,6 +67,12 @@ class TravelPlannerFlowTests(unittest.TestCase):
                 [{"name": "Museum", "address": "1 Museum St, Paris", "photos": ["https://example.com/museum.jpg"]}],
                 [{"name": "Cafe Central", "address": "2 Cafe St, Paris", "photos": ["https://example.com/cafe.jpg"]}],
             ]
+            mock_restaurants.invoke.return_value = [{
+                "name": "Cafe Meal",
+                "address": "3 Meal St, Paris",
+                "photos": ["https://example.com/meal.jpg"],
+                "rating": 4.2,
+            }]
             mock_hotels.invoke.return_value = [{
                 "name": "Hotel Paris",
                 "address": "1 Hotel St, Paris",
@@ -108,21 +107,18 @@ class TravelPlannerFlowTests(unittest.TestCase):
             )
             self.assertEqual(initial.status_code, 200)
             session_id = initial.json()["session_id"]
-
             regenerated = self.client.post(
                 "/regenerate_suggested_city",
                 json={"session_id": session_id, "user_instruction": "more energetic"},
             )
             self.assertEqual(regenerated.status_code, 200)
             self.assertEqual(regenerated.json()["suggested_cities"][0]["city_name"], "Tokyo")
-
             plan = self.client.post(
                 "/get_tour_plan",
                 json={"session_id": session_id, "selected_city": "Paris"},
             )
             self.assertEqual(plan.status_code, 200)
             self.assertEqual(plan.json()["source"], "generated")
-
             plan_regenerated = self.client.post(
                 "/regenerate_tour_plan",
                 json={
@@ -132,12 +128,14 @@ class TravelPlannerFlowTests(unittest.TestCase):
                 },
             )
             self.assertEqual(plan_regenerated.status_code, 200)
-            self.assertEqual(plan_regenerated.json()["tour_plan"][0]["activities"][0]["activity_name"], "Cafe Central")
-
+            regenerated_activities = plan_regenerated.json()["tour_plan"][0]["activities"]
+            first_non_meal = next(
+                activity for activity in regenerated_activities
+                if not activity["activity_name"].startswith(("Breakfast", "Lunch", "Dinner"))
+            )
+            self.assertEqual(first_non_meal["activity_name"], "Cafe Central")
             details = self.client.get(f"/session/{session_id}")
             self.assertEqual(details.status_code, 200)
             self.assertEqual(len(details.json()["suggested_cities"]), 1)
-
-
 if __name__ == "__main__":
     unittest.main()

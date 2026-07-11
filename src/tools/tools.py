@@ -21,9 +21,9 @@ def _extract_photo_urls(place: dict, api_key: str, max_photos: int = 4) -> list[
 def _extract_photo_ids(place: dict, api_key: str, max_photos: int = 4) -> list[str]:
     """Return compact image IDs for place photos to reduce LLM/tool payload size."""
     return image_registry.register_many(_extract_photo_urls(place, api_key, max_photos))
+
+
 @tool
-
-
 def get_cityinfo(city_name: str) -> dict:
     """Look up basic info for a city by name.
     Returns a dict with: city_name, country, lat, lng, and photos
@@ -76,9 +76,9 @@ def get_cityinfo(city_name: str) -> dict:
         return data
     except Exception as e:
         return {"error": str(e)}
+
+
 @tool
-
-
 def get_detailed_tourist_places(location_name: str) -> list[dict]:
     """Search for tourist attractions in a given location.
     Returns a list of dicts, each with: name, address, phone, coords, photos
@@ -137,6 +137,8 @@ def get_detailed_tourist_places(location_name: str) -> list[dict]:
         return results
     except Exception as e:
         return [{"error": str(e)}]
+
+
 @tool
 def get_it_companies(location_name: str) -> list[dict]:
     """Search for top IT/software companies in a given location.
@@ -185,8 +187,6 @@ def get_it_companies(location_name: str) -> list[dict]:
 
 
 @tool
-
-
 def get_google_hotels_sorted_by_rating(location_name: str) -> list[dict]:
     """Search for hotels/resorts in a given location, sorted by rating.
     Returns a list of dicts, each with: name, rating, phone, price_level,
@@ -245,9 +245,9 @@ def get_google_hotels_sorted_by_rating(location_name: str) -> list[dict]:
         return hotel_list
     except Exception as e:
         return [{"error": str(e)}]
+
+
 @tool
-
-
 def get_nearby_restaurants(location_name: str, meal_type: str = "meal") -> list[dict]:
     """Search for restaurants near a hotel, attraction, address, or area.
     Returns restaurant dicts with: name, address, rating, price_level, phone,
@@ -302,9 +302,9 @@ def get_nearby_restaurants(location_name: str, meal_type: str = "meal") -> list[
         return restaurants
     except Exception as e:
         return [{"error": str(e)}]
+
+
 @tool
-
-
 def calculate_distance_routes_api(origin_address: str, destination_address: str) -> dict:
     """Calculate driving distance and duration between two addresses.
     Returns a dict with: origin, destination, distance_km, duration_hours,

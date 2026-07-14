@@ -1,9 +1,10 @@
+import json
 import requests
 from langchain_core.tools import tool
 from src.config.config_env import settings
 from src.core.image_registry import image_registry
 
-def calculate_distance_routes_api(origin_address: str, destination_address: str) -> dict:
+"""def calculate_distance_routes_api(origin_address: str, destination_address: str) -> dict:
 
     api_key = settings.google_api_key
     if not api_key:
@@ -46,8 +47,11 @@ dist = calculate_distance_routes_api("Dhaka", "Chittagong")
 print(dist)
 
 
-
 """
+
+
+
+
 def _extract_photo_urls(place: dict, api_key: str, max_photos: int = 4) -> list[str]:
 
     photos = place.get("photos", [])
@@ -86,7 +90,7 @@ def get_google_hotels_sorted_by_rating(location_name: str) -> list[dict]:
         ),
     }
     payload = {
-        "textQuery": f"resorts in {location_name}",
+        "textQuery": f"resorts in for relax and re{location_name}",
         "includedType": "hotel",
         "pageSize": 10,
     }
@@ -126,4 +130,105 @@ def get_google_hotels_sorted_by_rating(location_name: str) -> list[dict]:
 
 locations = get_google_hotels_sorted_by_rating("dhaka")
 
-print(locations)"""
+print(locations)
+
+# with open("data/nornal_resort.json", 'w', 'utf-8') as f:
+#     json.dump(locations, f, ascii=4)
+
+
+with open("data/refresh_resort.json", "w", encoding="utf-8") as f:
+    json.dump(locations, f, ensure_ascii=False, indent=4)
+
+
+import requests
+# Assuming 'settings' and '_extract_photo_ids' are defined elsewhere in your code
+
+def get_google_hotels_by_facilities(location_name: str, facilities: list[str] = None) -> list[dict]:
+
+    api_key = settings.google_api_key
+    url = "https://places.googleapis.com/v1/places:searchText"
+    
+    # 1. Build a dynamic query based on the facilities you want
+    query_text = f"resorts in {location_name}"
+    if facilities:
+        # e.g., turns ["pool", "spa"] into "pool and spa"
+        facilities_str = " and ".join(facilities)
+        query_text = f"{query_text} with {facilities_str}"
+        
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": (
+            "places.displayName,"
+            "places.formattedAddress,"
+            "places.priceLevel,"
+            "places.location,"
+            "places.rating,"
+            "places.nationalPhoneNumber,"
+            "places.photos,"
+            "places.editorialSummary"  # Added to fetch a description of the place
+        ),
+    }
+    
+    payload = {
+        "textQuery": query_text,
+        "includedType": "hotel",
+        "pageSize": 10,
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        
+        if response.status_code != 200:
+            return [{"error": f"{response.status_code}: {response.text}"}]
+            
+        places = response.json().get("places", [])
+        if not places:
+            return []
+            
+        hotel_list = []
+        for place in places:
+            coords = place.get("location", {})
+            
+            # Safely get the editorial summary if it exists
+            summary = place.get("editorialSummary", {}).get("text", "No summary available")
+            
+            hotel_list.append(
+                {
+                    "name": place.get("displayName", {}).get("text", "N/A"),
+                    "rating": place.get("rating", 0.0),
+                    "summary": summary,
+                    "phone": place.get("nationalPhoneNumber", "No phone number listed"),
+                    "price_level": place.get("priceLevel", "NOT_AVAILABLE"),
+                    "address": place.get("formattedAddress", "No address listed"),
+                    "photos": _extract_photo_ids(place, api_key) or ["No photo available"],
+                    "coords": {
+                        "lat": coords.get("latitude"),
+                        "lng": coords.get("longitude"),
+                    },
+                }
+            )
+            
+        # 2. We DO NOT sort by rating here anymore. 
+        # The list remains in the order Google returned it, which is optimized for relevance to the requested facilities.
+        
+        print("=" * 100)
+        print(" " * 40, f"Hotels in {location_name} with {facilities}")
+        print("=" * 100)
+        
+        return hotel_list
+        
+    except Exception as e:
+        return [{"error": str(e)}]
+    
+
+
+# Look for resorts with specific amenities
+my_hotels = get_google_hotels_by_facilities("Dhaka", facilities=["private pool", "gym", "spa"])
+
+
+with open("data/facility_resort.json", "w", encoding="utf-8") as f:
+    json.dump(my_hotels, f, ensure_ascii=False, indent=4)
+
+
+

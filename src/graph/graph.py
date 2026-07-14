@@ -1,15 +1,13 @@
 from langgraph.graph import StateGraph, START, END
-from src.graph.nodes import chatbot
+from src.graph.nodes import chatbot, tools
 from src.graph.state import ChatState
-from tools.tools import get_cityinfo
-from src.tools.get_weather import get_current_weather
 from langgraph.prebuilt import ToolNode, tools_condition
 
 builder = StateGraph(ChatState)
 
 
 builder.add_node("chatbot", chatbot)
-builder.add_node("tools", ToolNode([get_current_weather, get_cityinfo]))
+builder.add_node("tools", ToolNode(tools))
 
 
 

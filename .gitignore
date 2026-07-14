@@ -12,3 +12,5 @@ wheels/
 .env
 
 code.py
+
+data/

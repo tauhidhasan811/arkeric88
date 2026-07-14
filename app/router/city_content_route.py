@@ -95,7 +95,12 @@ def _enrich_city_suggestions(suggested_cities: list) -> list:
 # ==================== TOUR PLAN ENRICHMENT HELPERS ====================
 
 
-def _find_hotel(city_name: str, total_budget: float, num_nights: int) -> dict:
+def _find_hotel(
+    city_name: str,
+    total_budget: float,
+    num_nights: int,
+    profile_search_query: str = "",
+) -> dict:
     """
     Find the best-rated hotel in the city that fits within the user's total budget.
     1. Call get_google_hotels_sorted_by_rating for the city
@@ -103,7 +108,10 @@ def _find_hotel(city_name: str, total_budget: float, num_nights: int) -> dict:
     3. Returns hotel dict with name, address, rating, price_level, photos, coords
     """
     try:
-        hotels = get_google_hotels_sorted_by_rating.invoke({"location_name": city_name})
+        hotels = get_google_hotels_sorted_by_rating.invoke({
+            "location_name": city_name,
+            "search_query": profile_search_query or None,
+        })
         if not hotels or "error" in hotels[0]:
             # Fallback: return a placeholder
             return _fallback_hotel(city_name)
@@ -194,10 +202,39 @@ def _is_tool_error_list(results: list) -> bool:
     return bool(results and isinstance(results[0], dict) and "error" in results[0])
 
 
-def _fetch_attraction_dataset(city_name: str) -> list[dict]:
+def _build_profile_search_context(questions_answers) -> str:
+    """Create positive Google Places terms from all experience-shaping answers."""
+    nightly_budget = questions_answers.budget_per_person_per_night
+    if nightly_budget is None:
+        nightly_budget = questions_answers.effective_total_budget / questions_answers.trip_length_days
+    if nightly_budget <= 150:
+        budget_tier = "entry budget"
+    elif nightly_budget <= 400:
+        budget_tier = "premium"
+    elif nightly_budget <= 1000:
+        budget_tier = "luxury"
+    else:
+        budget_tier = "ultra luxury"
+    terms = [
+        questions_answers.experience_kind,
+        questions_answers.travel_style,
+        questions_answers.trip_organization,
+        questions_answers.life_season,
+        " ".join(questions_answers.preferred_environments),
+        f"{questions_answers.energy_level} energy",
+        budget_tier,
+        "wellness restorative experiences",
+    ]
+    return " ".join(str(term).strip() for term in terms if str(term).strip())
+
+
+def _fetch_attraction_dataset(city_name: str, profile_search_query: str = "") -> list[dict]:
     """Fetch all relevant attractions once for the whole itinerary."""
     try:
-        results = get_detailed_tourist_places.invoke({"location_name": city_name})
+        results = get_detailed_tourist_places.invoke({
+            "location_name": city_name,
+            "search_query": profile_search_query or None,
+        })
         if not results or _is_tool_error_list(results):
             return []
         return results
@@ -232,9 +269,10 @@ def _enrich_activities(
     city_name: str,
     existing_plan: list | None = None,
     day_to_regenerate: int | None = None,
+    profile_search_query: str = "",
 ) -> list:
-    """Enrich activities from one shared attraction dataset and avoid repeats."""
-    attraction_dataset = _fetch_attraction_dataset(city_name)
+    """Enrich activities from one shared, profile-led dataset and avoid repeats."""
+    attraction_dataset = _fetch_attraction_dataset(city_name, profile_search_query)
     used_place_keys = _seed_used_place_keys(existing_plan, day_to_regenerate)
     enriched_plan = []
     for day in tour_plan:
@@ -532,9 +570,15 @@ async def get_suggested_city(input_data: InputData):
     - Returns session_id for future regenerate calls.
     """
     try:
-        # Generate prompt from user's Q&A
+        # Persist the legacy top-level region inside the 12-answer profile so
+        # regeneration and itinerary generation retain the same hard constraint.
+        questions_answers = input_data.questions_answers
+        if not questions_answers.preferred_region and input_data.preferred_destinations:
+            questions_answers = questions_answers.model_copy(
+                update={"preferred_region": input_data.preferred_destinations}
+            )
         prompt = PromptGenerator.gen_city_suggestion_prompt(
-            questions_answers=input_data.questions_answers,
+            questions_answers=questions_answers,
             preferred_destinations=input_data.preferred_destinations,
             hope_of_this_trip=input_data.hope_of_this_trip,
         )
@@ -548,7 +592,7 @@ async def get_suggested_city(input_data: InputData):
         response["suggested_cities"] = enriched_cities
         # Create session and store Q&A + enriched suggestions
         session = CitySessionStore.create(
-            questions_answers=input_data.questions_answers,
+            questions_answers=questions_answers,
             suggested_cities=enriched_cities,
             response=response,
         )
@@ -659,14 +703,17 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         packing_tips = response.get("packing_tips", "")
         travel_tips = response.get("travel_tips", "")
         # === STEP 2a: Tool - Find hotel ===
-        budget = city_session.questions_answers.total_trip_budget
+        budget = city_session.questions_answers.effective_total_budget
         num_nights = city_session.questions_answers.trip_length_days
         city_name = request_data.selected_city
-        hotel = _find_hotel(city_name, budget, num_nights)
+        profile_search_query = _build_profile_search_context(city_session.questions_answers)
+        hotel = _find_hotel(city_name, budget, num_nights, profile_search_query)
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # === STEP 2b: Tool - Enrich activities with real addresses & photos ===
-        enriched_plan = _enrich_activities(llm_tour_plan, city_name)
+        enriched_plan = _enrich_activities(
+            llm_tour_plan, city_name, profile_search_query=profile_search_query
+        )
         enriched_plan = _add_daily_meals(enriched_plan, hotel_address, city_name)
         # === STEP 2c: Tool - Calculate real distances ===
         enriched_plan = _calculate_distances(enriched_plan, hotel_address)
@@ -678,7 +725,10 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         if not is_within_budget:
             # Try cheaper hotels
             try:
-                all_hotels = get_google_hotels_sorted_by_rating.invoke({"location_name": city_name})
+                all_hotels = get_google_hotels_sorted_by_rating.invoke({
+                    "location_name": city_name,
+                    "search_query": profile_search_query,
+                })
                 if all_hotels and "error" not in all_hotels[0]:
                     # Sort by estimated price ascending
                     all_hotels_with_price = [
@@ -760,8 +810,9 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
         llm_tour_plan = generated_response.get("tour_plan", [])
         # === STEP 2: Tool enrichment ===
         city_name = activity_session.city
-        budget = city_session.questions_answers.total_trip_budget
+        budget = city_session.questions_answers.effective_total_budget
         num_nights = city_session.questions_answers.trip_length_days
+        profile_search_query = _build_profile_search_context(city_session.questions_answers)
         # Reuse the existing hotel from the stored response if available
         hotel_data = activity_session.stay
         if hotel_data:
@@ -774,7 +825,7 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
                 "coords": hotel_data.coords,
             }
         else:
-            hotel = _find_hotel(city_name, budget, num_nights)
+            hotel = _find_hotel(city_name, budget, num_nights, profile_search_query)
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # Enrich activities with real data
@@ -783,6 +834,7 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
             city_name,
             existing_plan=activity_session.tour_plan,
             day_to_regenerate=regenerate_data.day_to_regenerate,
+            profile_search_query=profile_search_query,
         )
         enriched_plan = _add_daily_meals(enriched_plan, hotel_address, city_name)
         # Calculate distances for the regenerated days, then merge if needed.
@@ -798,7 +850,10 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
         )
         if not is_within_budget:
             try:
-                all_hotels = get_google_hotels_sorted_by_rating.invoke({"location_name": city_name})
+                all_hotels = get_google_hotels_sorted_by_rating.invoke({
+                    "location_name": city_name,
+                    "search_query": profile_search_query,
+                })
                 if all_hotels and "error" not in all_hotels[0]:
                     all_hotels_with_price = [
                         (h, _estimate_hotel_cost(h) * num_nights)

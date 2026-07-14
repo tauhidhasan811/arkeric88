@@ -1,5 +1,5 @@
 from datetime import date
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import List, Optional
 
 
@@ -34,11 +34,38 @@ class QuestionAnswers(BaseModel):
     # Your birthdate
     birthdate: date
 
-    # Total trip budget (covers hotel + all activities for the entire trip)
-    total_trip_budget: float
+    # Preferred geography from question 12 (for example: Europe or Asia).
+    # `InputData.preferred_destinations` remains supported for older clients.
+    preferred_region: Optional[str] = None
+
+    # Question 10 is a per-person, per-night budget. `total_trip_budget` is
+    # retained as a backwards-compatible alternative for existing clients.
+    budget_per_person_per_night: Optional[float] = None
+    total_trip_budget: Optional[float] = None
 
     # How many days are you planning to travel?
     trip_length_days: int
+
+    @model_validator(mode="after")
+    def validate_budget(self):
+        if self.budget_per_person_per_night is None and self.total_trip_budget is None:
+            raise ValueError(
+                "Provide budget_per_person_per_night or the legacy total_trip_budget."
+            )
+        if self.budget_per_person_per_night is not None and self.budget_per_person_per_night <= 0:
+            raise ValueError("budget_per_person_per_night must be greater than zero.")
+        if self.total_trip_budget is not None and self.total_trip_budget <= 0:
+            raise ValueError("total_trip_budget must be greater than zero.")
+        if self.trip_length_days <= 0:
+            raise ValueError("trip_length_days must be greater than zero.")
+        return self
+
+    @property
+    def effective_total_budget(self) -> float:
+        """Budget for one traveler across the stay, including legacy inputs."""
+        if self.budget_per_person_per_night is not None:
+            return self.budget_per_person_per_night * self.trip_length_days
+        return float(self.total_trip_budget or 0)
 
 
 # ==================== CITY SUGGESTION REQUEST/RESPONSE ====================

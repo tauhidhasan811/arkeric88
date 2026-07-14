@@ -62,7 +62,7 @@ class ProcessData:
             try:
                 cleaned = ast.literal_eval(cleaned)
             except (ValueError, SyntaxError) as e:
-                print(f"Error parsing content with ast.literal_eval: {e}")
+                # print(f"Error parsing content with ast.literal_eval: {e}")
                 cleaned = {None}  # Or handle the error as needed (e.g., return a default value or an empty dict/list)
 
         return cleaned

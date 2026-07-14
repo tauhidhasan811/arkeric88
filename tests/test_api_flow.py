@@ -3,7 +3,10 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 import main
+from app.schemas.city_body import QuestionAnswers
+from src.core.prompt_templete import PromptGenerator
 from src.service.chat_services import get_ai_response
+from src.tools.tools import get_detailed_tourist_places
 
 
 class FakeLLM:
@@ -137,5 +140,42 @@ class TravelPlannerFlowTests(unittest.TestCase):
             details = self.client.get(f"/session/{session_id}")
             self.assertEqual(details.status_code, 200)
             self.assertEqual(len(details.json()["suggested_cities"]), 1)
+
+    def test_profile_budget_region_and_dynamic_place_query(self) -> None:
+        profile = QuestionAnswers(
+            todays_feeling="overwhelmed",
+            experience_kind="nervous system reset",
+            energy_level="low",
+            travel_style="solo and slow",
+            trip_organization="semi-guided",
+            activity_restrictions=["steep hikes"],
+            life_season="recovery",
+            preferred_environments=["forest", "water"],
+            birthdate="1990-01-01",
+            budget_per_person_per_night=250,
+            trip_length_days=4,
+            preferred_region="Asia",
+        )
+        self.assertEqual(profile.effective_total_budget, 1000)
+        prompt = PromptGenerator.gen_city_suggestion_prompt(profile)
+        self.assertIn("Preferred region: Asia", prompt)
+        self.assertIn("$250.00 per person/night", prompt)
+        self.assertIn("hard constraints", prompt)
+
+        mock_response = Mock(status_code=200)
+        mock_response.json.return_value = {"places": []}
+        with patch("src.tools.tools.requests.post", return_value=mock_response) as post:
+            result = get_detailed_tourist_places.invoke({
+                "location_name": "Kyoto",
+                "search_query": "quiet forest mindfulness restorative experiences",
+            })
+        self.assertEqual(result, [])
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["textQuery"],
+            "quiet forest mindfulness restorative experiences in Kyoto",
+        )
+        self.assertNotIn("includedType", payload)
+
 if __name__ == "__main__":
     unittest.main()

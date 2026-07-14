@@ -17,6 +17,6 @@ def force_delete_folder(path):
 
     if os.path.exists(path):
         shutil.rmtree(path, onerror=remove_readonly)
-        print(f"Deleted: {path}")
+        # print(f"Deleted: {path}")
     else:
         print(f"Path does not exist: {path}")

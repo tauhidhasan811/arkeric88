@@ -1,16 +1,19 @@
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from src.config.config_openai import GetOpenAILlm
+from src.core.system_prompt import SYSTEM_PROMPT
 from src.tools.tools import (
     calculate_distance_routes_api,
     get_cityinfo,
     get_detailed_tourist_places,
     get_google_hotels_sorted_by_rating,
+    get_google_hotels_by_facilities,
     get_nearby_restaurants,
 )
 TOOLS = [
     get_cityinfo,
     get_detailed_tourist_places,
     get_google_hotels_sorted_by_rating,
+    get_google_hotels_by_facilities,
     get_nearby_restaurants,
     calculate_distance_routes_api,
 ]
@@ -28,7 +31,7 @@ def _message_content_to_text(content) -> str:
 
 def get_ai_response(prompt: str) -> str:
     llm = GetOpenAILlm().bind_tools(TOOLS)
-    messages = [("user", prompt)]
+    messages = [SystemMessage(content=SYSTEM_PROMPT), ("user", prompt)]
     for _ in range(5):
         response = llm.invoke(messages)
         tool_calls = getattr(response, "tool_calls", None) or []

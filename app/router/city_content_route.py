@@ -10,8 +10,9 @@ from app.schemas.city_body import (
 )
 from src.core.data_processor import ProcessData
 from src.session.city_session_store import CitySessionStore, ActivitySessionStore
-from src.tools.tools import get_cityinfo, get_detailed_tourist_places, get_google_hotels_sorted_by_rating, calculate_distance_routes_api, get_nearby_restaurants
+from src.tools.tools import get_cityinfo, get_detailed_tourist_places, get_google_hotels_sorted_by_rating, get_google_hotels_by_facilities, calculate_distance_routes_api, get_nearby_restaurants
 from src.core.image_registry import image_registry
+from src.core.retreat_catalog import find_retreat_candidates, retreat_facilities
 import re
 router = APIRouter()
 
@@ -100,6 +101,7 @@ def _find_hotel(
     total_budget: float,
     num_nights: int,
     profile_search_query: str = "",
+    preferred_region: str = "",
 ) -> dict:
     """
     Find the best-rated hotel in the city that fits within the user's total budget.
@@ -107,6 +109,34 @@ def _find_hotel(
     2. Try best-rated first, then fall back to cheaper options if budget allows
     3. Returns hotel dict with name, address, rating, price_level, photos, coords
     """
+    nightly_budget = total_budget / max(num_nights, 1)
+    catalog_candidates = find_retreat_candidates(
+        city_name=city_name,
+        preferred_region=preferred_region,
+        facility_terms=profile_search_query,
+        nightly_budget=nightly_budget,
+    )
+    for retreat in catalog_candidates:
+        property_name = retreat.get("Property Name", "")
+        location = ", ".join(
+            part for part in [retreat.get("Region", ""), retreat.get("Country", "")] if part
+        )
+        try:
+            map_results = get_google_hotels_by_facilities.invoke({
+                "location_name": location or city_name,
+                "facilities": [],
+                "search_query": property_name,
+            })
+            if map_results and not _is_tool_error_list(map_results):
+                map_hotel = _best_hotel_name_match(map_results, property_name)
+                if map_hotel:
+                    return _merge_catalog_and_map_hotel(retreat, map_hotel)
+        except Exception:
+            continue
+
+    if catalog_candidates:
+        return _merge_catalog_and_map_hotel(catalog_candidates[0], {})
+
     try:
         hotels = get_google_hotels_sorted_by_rating.invoke({
             "location_name": city_name,
@@ -138,6 +168,10 @@ def _find_hotel(
 
 def _estimate_hotel_cost(hotel: dict) -> float:
     """Estimate nightly hotel cost from price_level or return a default."""
+    nightly_price = str(hotel.get("average_nightly_price", ""))
+    price_match = re.search(r"[\d,]+", nightly_price)
+    if price_match:
+        return float(price_match.group(0).replace(",", ""))
     price_str = hotel.get("price_level", "NOT_AVAILABLE")
     # Google price levels: PRICE_LEVEL_UNSPECIFIED=0, INEXPENSIVE=1, MODERATE=2, EXPENSIVE=3, LUXURY=4
     price_map = {
@@ -154,13 +188,78 @@ def _estimate_hotel_cost(hotel: dict) -> float:
 def _fallback_hotel(city_name: str) -> dict:
     """Return a fallback hotel object when the tool fails."""
     return {
-        "name": f"Hotel in {city_name}",
-        "address": f"City Center, {city_name}",
+        "name": f"Recommended hotel/resort in {city_name} (approximately)",
+        "address": f"Near central {city_name} (approximately)",
         "rating": 0.0,
-        "price_level": "NOT_AVAILABLE",
+        "price_level": "Moderate (approximately)",
         "photos": [],
-        "coords": {"lat": 0.0, "lng": 0.0},
+        "coords": None,
+        "average_nightly_price": "$150 per night (approximately)",
+        "budget_tier": "Premium (approximately)",
+        "facilities": [],
+        "website": "",
+        "estimate_note": "Hotel details were unavailable; displayed values are (approximately).",
     }
+
+
+def _best_hotel_name_match(hotels: list[dict], property_name: str) -> dict | None:
+    """Return a Google Maps result only when its name matches the workbook property."""
+    generic_tokens = {"hotel", "resort", "retreat", "spa", "estate", "the"}
+    target_tokens = set(_normalize_place_text(property_name).split()) - generic_tokens
+    scored = [
+        (
+            len(target_tokens & set(_normalize_place_text(hotel.get("name", "")).split())),
+            hotel,
+        )
+        for hotel in hotels
+    ]
+    score, hotel = max(scored, key=lambda item: item[0])
+    return hotel if score > 0 else None
+
+
+def _merge_catalog_and_map_hotel(retreat: dict, map_hotel: dict) -> dict:
+    """Use the workbook for selection and Google Maps for current details/images."""
+    approximate_fields = []
+    region_country = ", ".join(
+        part for part in [retreat.get("Region", ""), retreat.get("Country", "")] if part
+    )
+    address = map_hotel.get("address")
+    if not address or address == "No address listed":
+        address = f"{region_country or 'Location unavailable'} (approximately)"
+        approximate_fields.append("address")
+    rating = map_hotel.get("rating")
+    if rating in (None, 0, 0.0):
+        experience_score = retreat.get("⌀ Score", "")
+        try:
+            rating = round(min(5.0, float(experience_score) / 2), 1)
+        except (TypeError, ValueError):
+            rating = 4.0
+        approximate_fields.append("rating")
+    price_level = map_hotel.get("price_level")
+    if not price_level or price_level == "NOT_AVAILABLE":
+        price_level = f"{retreat.get('Budget Tier') or 'Premium'} (approximately)"
+        approximate_fields.append("price level")
+    average_nightly_price = retreat.get("Avg Night", "")
+    if not average_nightly_price:
+        average_nightly_price = "$150 per night (approximately)"
+        approximate_fields.append("nightly price")
+    return {
+        "name": map_hotel.get("name") or retreat.get("Property Name") or "Retreat",
+        "address": address,
+        "rating": rating,
+        "price_level": price_level,
+        "photos": map_hotel.get("photos", []),
+        "coords": map_hotel.get("coords"),
+        "average_nightly_price": average_nightly_price,
+        "budget_tier": retreat.get("Budget Tier", ""),
+        "facilities": retreat_facilities(retreat),
+        "website": retreat.get("Website", ""),
+        "estimate_note": (
+            f"Unavailable {', '.join(approximate_fields)} values are (approximately)."
+            if approximate_fields else ""
+        ),
+    }
+
 _PHOTO_SENTINELS = {"No photos available", "No photo available"}
 _MEAL_SCHEDULE = {
     "Breakfast": ("08:00 AM - 09:00 AM", 18),
@@ -550,6 +649,11 @@ def _build_final_response(
             price_level=hotel.get("price_level", "NOT_AVAILABLE"),
             photos=_clean_photos(hotel.get("photos", [])),
             coords=hotel.get("coords"),
+            average_nightly_price=hotel.get("average_nightly_price", ""),
+            budget_tier=hotel.get("budget_tier", ""),
+            facilities=hotel.get("facilities", []),
+            website=hotel.get("website", ""),
+            estimate_note=hotel.get("estimate_note", ""),
         ),
         "tour_plan": tour_plan,
         "total_cost_estimate": round(total_cost, 2),
@@ -707,7 +811,13 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         num_nights = city_session.questions_answers.trip_length_days
         city_name = request_data.selected_city
         profile_search_query = _build_profile_search_context(city_session.questions_answers)
-        hotel = _find_hotel(city_name, budget, num_nights, profile_search_query)
+        hotel = _find_hotel(
+            city_name,
+            budget,
+            num_nights,
+            profile_search_query,
+            city_session.questions_answers.preferred_region or "",
+        )
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # === STEP 2b: Tool - Enrich activities with real addresses & photos ===
@@ -823,9 +933,20 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
                 "price_level": hotel_data.price_level,
                 "photos": hotel_data.photos,
                 "coords": hotel_data.coords,
+                "average_nightly_price": hotel_data.average_nightly_price,
+                "budget_tier": hotel_data.budget_tier,
+                "facilities": hotel_data.facilities,
+                "website": hotel_data.website,
+                "estimate_note": hotel_data.estimate_note,
             }
         else:
-            hotel = _find_hotel(city_name, budget, num_nights, profile_search_query)
+            hotel = _find_hotel(
+                city_name,
+                budget,
+                num_nights,
+                profile_search_query,
+                city_session.questions_answers.preferred_region or "",
+            )
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # Enrich activities with real data

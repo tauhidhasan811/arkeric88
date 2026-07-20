@@ -189,6 +189,11 @@ class ActivitySessionStore:
                 price_level=stay_data.get("price_level", "NOT_AVAILABLE"),
                 photos=stay_data.get("photos", []),
                 coords=stay_data.get("coords"),
+                average_nightly_price=stay_data.get("average_nightly_price", ""),
+                budget_tier=stay_data.get("budget_tier", ""),
+                facilities=stay_data.get("facilities", []),
+                website=stay_data.get("website", ""),
+                estimate_note=stay_data.get("estimate_note", ""),
             )
         
         session = ActivitySession(
@@ -335,6 +340,11 @@ class ActivitySessionStore:
                 price_level=stay_data.get("price_level", "NOT_AVAILABLE"),
                 photos=stay_data.get("photos", []),
                 coords=stay_data.get("coords"),
+                average_nightly_price=stay_data.get("average_nightly_price", ""),
+                budget_tier=stay_data.get("budget_tier", ""),
+                facilities=stay_data.get("facilities", []),
+                website=stay_data.get("website", ""),
+                estimate_note=stay_data.get("estimate_note", ""),
             )
 
         # Update total cost estimate if provided

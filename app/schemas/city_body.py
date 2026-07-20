@@ -93,6 +93,11 @@ class StayInfo(BaseModel):
     price_level: str
     photos: List[str] = []
     coords: Optional[dict] = None
+    average_nightly_price: str = ""
+    budget_tier: str = ""
+    facilities: List[str] = []
+    website: str = ""
+    estimate_note: str = ""
 
 
 # ==================== ACTIVITY/TOUR PLAN REQUEST/RESPONSE ====================

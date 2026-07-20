@@ -202,6 +202,90 @@ def _fallback_hotel(city_name: str) -> dict:
     }
 
 
+def _complete_hotel_values(
+    hotel: dict,
+    city_name: str,
+    nightly_budget: float,
+    profile_search_query: str = "",
+) -> dict:
+    """Populate unavailable hotel fields with clearly labelled estimates."""
+    completed = hotel.copy()
+    approximate_fields = []
+    rating = float(completed.get("rating") or 0)
+
+    price_level = completed.get("price_level")
+    if not price_level or price_level == "NOT_AVAILABLE":
+        if rating >= 4.8 or nightly_budget > 1000:
+            price_level = "PRICE_LEVEL_LUXURY (approximately)"
+        elif rating >= 4.5 or nightly_budget > 400:
+            price_level = "PRICE_LEVEL_EXPENSIVE (approximately)"
+        elif nightly_budget > 150:
+            price_level = "PRICE_LEVEL_MODERATE (approximately)"
+        else:
+            price_level = "PRICE_LEVEL_INEXPENSIVE (approximately)"
+        completed["price_level"] = price_level
+        approximate_fields.append("price level")
+
+    if not completed.get("average_nightly_price"):
+        estimated_price = {
+            "PRICE_LEVEL_INEXPENSIVE": 100,
+            "PRICE_LEVEL_MODERATE": 225,
+            "PRICE_LEVEL_EXPENSIVE": 350,
+            "PRICE_LEVEL_LUXURY": 500,
+        }
+        normalized_level = price_level.replace(" (approximately)", "")
+        amount = estimated_price.get(normalized_level, max(150, round(nightly_budget)))
+        completed["average_nightly_price"] = f"${amount} per night (approximately)"
+        approximate_fields.append("nightly price")
+
+    if not completed.get("budget_tier"):
+        amount = _estimate_hotel_cost(completed)
+        if amount <= 150:
+            tier = "Entry"
+        elif amount <= 400:
+            tier = "Premium"
+        elif amount <= 1000:
+            tier = "Luxury"
+        else:
+            tier = "Ultra Luxury"
+        completed["budget_tier"] = f"{tier} (approximately)"
+        approximate_fields.append("budget tier")
+
+    if not completed.get("facilities"):
+        profile = _normalize_place_text(profile_search_query)
+        facility_rules = {
+            "spa": "Spa/wellness facilities (approximately)",
+            "mindful": "Mindfulness spaces or sessions (approximately)",
+            "fitness": "Fitness facilities (approximately)",
+            "nature": "Nature-focused surroundings or access (approximately)",
+            "forest": "Nature-focused surroundings or access (approximately)",
+            "water": "Water or coastal access (approximately)",
+            "nutrition": "Health-conscious dining (approximately)",
+            "diagnostic": "Wellness consultation services (approximately)",
+            "luxury": "Premium guest amenities (approximately)",
+        }
+        facilities = []
+        for keyword, label in facility_rules.items():
+            if keyword in profile and label not in facilities:
+                facilities.append(label)
+        completed["facilities"] = facilities or [
+            "Guest accommodation services (approximately)",
+            "Wi-Fi (approximately)",
+        ]
+        approximate_fields.append("facilities")
+
+    completed["website"] = completed.get("website") or "Not available"
+    prior_note = completed.get("estimate_note", "").strip()
+    fields_text = ", ".join(approximate_fields)
+    new_note = (
+        f"Unavailable {fields_text} values are (approximately)."
+        if approximate_fields else ""
+    )
+    completed["estimate_note"] = " ".join(
+        note for note in [prior_note, new_note] if note
+    )
+    return completed
+
 def _best_hotel_name_match(hotels: list[dict], property_name: str) -> dict | None:
     """Return a Google Maps result only when its name matches the workbook property."""
     generic_tokens = {"hotel", "resort", "retreat", "spa", "estate", "the"}
@@ -818,6 +902,12 @@ async def get_tour_plan(request_data: TourPlanRequestData):
             profile_search_query,
             city_session.questions_answers.preferred_region or "",
         )
+        hotel = _complete_hotel_values(
+            hotel,
+            city_name,
+            budget / max(num_nights, 1),
+            profile_search_query,
+        )
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # === STEP 2b: Tool - Enrich activities with real addresses & photos ===
@@ -840,6 +930,15 @@ async def get_tour_plan(request_data: TourPlanRequestData):
                     "search_query": profile_search_query,
                 })
                 if all_hotels and "error" not in all_hotels[0]:
+                    all_hotels = [
+                        _complete_hotel_values(
+                            candidate,
+                            city_name,
+                            budget / max(num_nights, 1),
+                            profile_search_query,
+                        )
+                        for candidate in all_hotels
+                    ]
                     # Sort by estimated price ascending
                     all_hotels_with_price = [
                         (h, _estimate_hotel_cost(h) * num_nights)
@@ -947,6 +1046,12 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
                 profile_search_query,
                 city_session.questions_answers.preferred_region or "",
             )
+        hotel = _complete_hotel_values(
+            hotel,
+            city_name,
+            budget / max(num_nights, 1),
+            profile_search_query,
+        )
         hotel["photos"] = _clean_photos(hotel.get("photos", []))
         hotel_address = hotel.get("address", f"City Center, {city_name}")
         # Enrich activities with real data
@@ -976,6 +1081,15 @@ async def regenerate_tour_plan(regenerate_data: RegenerateActivityInputData):
                     "search_query": profile_search_query,
                 })
                 if all_hotels and "error" not in all_hotels[0]:
+                    all_hotels = [
+                        _complete_hotel_values(
+                            candidate,
+                            city_name,
+                            budget / max(num_nights, 1),
+                            profile_search_query,
+                        )
+                        for candidate in all_hotels
+                    ]
                     all_hotels_with_price = [
                         (h, _estimate_hotel_cost(h) * num_nights)
                         for h in all_hotels

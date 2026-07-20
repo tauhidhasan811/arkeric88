@@ -34,7 +34,7 @@ class TravelPlannerFlowTests(unittest.TestCase):
         self.client = TestClient(main.app)
         self.responses = iter([
             '{"suggested_cities":[{"city_name":"Paris","country_name":"France","number_of_days":3,"description":"Romantic"}],"reasoning":"first"}',
-            '{"suggested_cities":[{"city_name":"Tokyo","country_name":"Japan","number_of_days":4,"description":"Energetic"}],"reasoning":"second"}',
+            '{"suggested_cities":[{"city_name":"Lisbon","country_name":"Portugal","number_of_days":4,"description":"Restorative"}],"reasoning":"second"}',
             '{"tour_plan":[{"day":1,"activities":[{"activity_name":"Museum","activity_description":"Visit","activity_location":"Louvre","activity_time":"10:00","activity_cost":20}]}],"total_cost_estimate":20,"packing_tips":"light","travel_tips":"walk"}',
             '{"tour_plan":[{"day":1,"activities":[{"activity_name":"Cafe","activity_description":"Coffee","activity_location":"Center","activity_time":"11:00","activity_cost":10}]}],"reasoning":"updated"}',
         ])
@@ -115,7 +115,7 @@ class TravelPlannerFlowTests(unittest.TestCase):
                 json={"session_id": session_id, "user_instruction": "more energetic"},
             )
             self.assertEqual(regenerated.status_code, 200)
-            self.assertEqual(regenerated.json()["suggested_cities"][0]["city_name"], "Tokyo")
+            self.assertEqual(regenerated.json()["suggested_cities"][0]["city_name"], "Lisbon")
             plan = self.client.post(
                 "/get_tour_plan",
                 json={"session_id": session_id, "selected_city": "Paris"},

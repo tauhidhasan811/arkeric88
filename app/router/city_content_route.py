@@ -12,6 +12,7 @@ from src.core.data_processor import ProcessData
 from src.session.city_session_store import CitySessionStore, ActivitySessionStore
 from src.tools.tools import get_cityinfo, get_detailed_tourist_places, get_google_hotels_sorted_by_rating, get_google_hotels_by_facilities, calculate_distance_routes_api, get_nearby_restaurants
 from src.core.image_registry import image_registry
+from src.core.geography import country_matches_region
 from src.core.retreat_catalog import find_retreat_candidates, retreat_facilities
 import re
 router = APIRouter()
@@ -41,7 +42,7 @@ def _merge_regenerated_field(
     return updated_response
 
 
-def _enrich_city_suggestions(suggested_cities: list) -> list:
+def _enrich_city_suggestions(suggested_cities: list, preferred_region: str = "") -> list:
     """
     Enrich LLM-proposed city suggestions with real data from get_cityinfo tool.
     For each city in the list:
@@ -56,13 +57,19 @@ def _enrich_city_suggestions(suggested_cities: list) -> list:
         city_name = city.get("city_name", "")
         if not city_name:
             continue
+        raw_country = city.get("country_name")
+        raw_region_match = country_matches_region(raw_country or "", preferred_region)
+        lookup_hint = raw_country if raw_region_match is True else preferred_region
         # Default values in case tool fails
         tool_country = None
         tool_photos = []
         tool_lat = None
         tool_lng = None
         try:
-            result = get_cityinfo.invoke({"city_name": city_name})
+            result = get_cityinfo.invoke({
+                "city_name": city_name,
+                "region_hint": lookup_hint or None,
+            })
             if result and "error" not in result:
                 tool_country = result.get("country")
                 tool_photos = result.get("photos", [])
@@ -80,7 +87,25 @@ def _enrich_city_suggestions(suggested_cities: list) -> list:
         except Exception:
             # Tool failure - keep defaults (empty photos, null coords)
             pass
-        # country_name priority: tool's verified value > LLM's guess
+        tool_region_match = country_matches_region(tool_country or "", preferred_region)
+        if tool_region_match is False:
+            # Never attach coordinates/photos from a same-named city in the wrong region.
+            tool_country = None
+            tool_photos = []
+            tool_lat = None
+            tool_lng = None
+            if raw_region_match is not True:
+                continue
+        elif tool_region_match is None and raw_region_match is True:
+            # An unknown lookup country must not override a region-valid model country.
+            tool_country = None
+            tool_photos = []
+            tool_lat = None
+            tool_lng = None
+        elif tool_country is None and raw_region_match is False:
+            continue
+
+        # country_name priority: region-valid tool value > region-valid model value
         merged_country = tool_country if tool_country else city.get("country_name")
         enriched.append({
             "city_name": city_name,
@@ -775,7 +800,9 @@ async def get_suggested_city(input_data: InputData):
         response = _parse_ai_response(response_text)
         # Enrich LLM suggestions with real data from get_cityinfo tool
         raw_cities = response.get("suggested_cities", [])
-        enriched_cities = _enrich_city_suggestions(raw_cities)
+        enriched_cities = _enrich_city_suggestions(
+            raw_cities, questions_answers.preferred_region or ""
+        )
         # Replace LLM-only output with enriched version in the response dict
         response["suggested_cities"] = enriched_cities
         # Create session and store Q&A + enriched suggestions
@@ -819,7 +846,9 @@ async def regenerate_suggested_city(regenerate_data: RegenerateInputData):
         generated_response = _parse_ai_response(response_text)
         # Enrich new LLM suggestions with real data from get_cityinfo tool
         raw_cities = generated_response.get("suggested_cities", [])
-        enriched_cities = _enrich_city_suggestions(raw_cities)
+        enriched_cities = _enrich_city_suggestions(
+            raw_cities, session.questions_answers.preferred_region or ""
+        )
         generated_response["suggested_cities"] = enriched_cities
         # Merge new suggestions into response
         response = _merge_regenerated_field(

@@ -37,8 +37,8 @@ def _extract_photo_ids(place: dict, api_key: str, max_photos: int = 4) -> list[s
 
 
 @tool
-def get_cityinfo(city_name: str) -> dict:
-    """Look up basic info for a city by name.
+def get_cityinfo(city_name: str, region_hint: str | None = None) -> dict:
+    """Look up a city by name, using a region hint to disambiguate matching names.
     Returns a dict with: city_name, country, lat, lng, and photos
     (up to 4 compact image IDs). Resolve image IDs to URLs before returning
     the final API response.
@@ -57,7 +57,7 @@ def get_cityinfo(city_name: str) -> dict:
         ),
     }
     payload = {
-        "textQuery": city_name,
+        "textQuery": f"{city_name}, {region_hint}" if region_hint else city_name,
         "includedType": "locality",
         "languageCode": "en",
     }

@@ -12,5 +12,6 @@ wheels/
 .env
 
 code.py
-
+personal/
+src/personal
 # data/

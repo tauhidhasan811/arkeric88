@@ -161,52 +161,6 @@ def get_detailed_tourist_places(
         return [{"error": str(e)}]
 
 
-@tool
-def get_it_companies(location_name: str) -> list[dict]:
-    """Search for top IT/software companies in a given location.
-    Returns a list of dicts with name, address, phone, photos (compact image
-    IDs), and office_hours. Resolve image IDs to URLs before returning final
-    API responses.
-    """
-    api_key = settings.google_api_key
-    url = "https://places.googleapis.com/v1/places:searchText"
-    headers = {
-        "Content-Type": "application/json",
-        "X-Goog-Api-Key": api_key,
-        "X-Goog-FieldMask": (
-            "places.displayName,"
-            "places.formattedAddress,"
-            "places.nationalPhoneNumber,"
-            "places.regularOpeningHours,"
-            "places.photos"
-        ),
-    }
-    payload = {
-        "textQuery": f"top software IT companies in {location_name}",
-        "languageCode": "en",
-    }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=20)
-        if response.status_code != 200:
-            return [{"error": f"{response.status_code}: {response.text}"}]
-        results = []
-        for place in response.json().get("places", []):
-            weekday_descriptions = place.get("regularOpeningHours", {}).get(
-                "weekdayDescriptions", []
-            )
-            results.append(
-                {
-                    "name": place.get("displayName", {}).get("text", "N/A"),
-                    "address": place.get("formattedAddress", "No address listed"),
-                    "phone": place.get("nationalPhoneNumber", "No phone number listed"),
-                    "photos": _extract_photo_ids(place, api_key) or ["No photos available"],
-                    "office_hours": weekday_descriptions or ["Hours not listed"],
-                }
-            )
-        return results
-    except Exception as e:
-        return [{"error": str(e)}]
-
 
 @tool
 def get_google_hotels_sorted_by_rating(

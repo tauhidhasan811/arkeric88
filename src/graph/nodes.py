@@ -1,23 +1,19 @@
 from langchain_core.messages import SystemMessage
 from src.config.config_openai import GetOpenAILlm
 from src.core.system_prompt import SYSTEM_PROMPT
-from src.tools.get_weather import get_current_weather
 from src.tools.tools import (
     calculate_distance_routes_api,
     get_cityinfo,
     get_detailed_tourist_places,
     get_google_hotels_sorted_by_rating,
     get_google_hotels_by_facilities,
-    get_it_companies,
     get_nearby_restaurants,
 )
 tools = [
-    get_current_weather,
     get_cityinfo,
     get_detailed_tourist_places,
     get_google_hotels_sorted_by_rating,
     get_google_hotels_by_facilities,
-    get_it_companies,
     get_nearby_restaurants,
     calculate_distance_routes_api,
 ]

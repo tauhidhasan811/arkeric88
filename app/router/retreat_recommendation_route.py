@@ -22,14 +22,20 @@ from app.schemas.retreat_v2_schema import (
     ScoreBreakdown,
 )
 from src.core.answer_mappings import ANSWER_MAPPING_VERSION
-from src.core.matching_profile import build_matching_profile
 from src.core.retreat_catalog import get_database_version, parse_avg_night, parse_best_season
 from src.core.retreat_explanation import generate_match_explanations
-from src.core.retreat_ranker import rank_properties
+from src.core.retreat_matching_orchestrator import build_ranked_pool
 from src.core.retreat_scoring import SCORING_VERSION
 from src.session.retreat_session_store import RetreatSessionStore
 
 router = APIRouter(prefix="/v2", tags=["retreat-recommendations"])
+
+# Number of properties returned directly by this endpoint. POST /get_suggested_city
+# runs the identical build_ranked_pool() pipeline with a much larger pool size
+# (see retreat_matching_orchestrator.DEFAULT_POOL_SIZE) so it has enough depth
+# to group into several distinct cities and support regeneration -- this
+# endpoint stays a small, direct property shortlist.
+DEFAULT_RECOMMENDATION_COUNT = 5
 
 
 def _restriction_status(profile) -> str:
@@ -70,8 +76,7 @@ async def get_retreat_recommendations(request: RetreatRecommendationRequest):
     API_V2_DOCS.md for the full filter/scoring rules and a sample response.
     """
     try:
-        profile = build_matching_profile(request)
-        ranking = rank_properties(profile)
+        profile, ranking = build_ranked_pool(request, pool_size=DEFAULT_RECOMMENDATION_COUNT)
         explanations = generate_match_explanations(ranking.ranked)
         restriction_status = _restriction_status(profile)
 

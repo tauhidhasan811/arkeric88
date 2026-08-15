@@ -1,126 +1,19 @@
 from typing import List, Optional
-from app.schemas.city_body import QuestionAnswers, CitySuggestionInput, TourPlanDayInput
+from app.schemas.city_body import QuestionAnswers, TourPlanDayInput
 
 
 class PromptGenerator:
-    """Generate profile-led wellness journey prompts without changing output schemas."""
+    """
+    Generate profile-led wellness journey prompts without changing output schemas.
 
-    ARCHETYPE_REFERENCE = """
-- Burned-Out Achiever: needs nervous-system regulation, quiet, and sleep; avoid pressure and forced socializing.
-- Transformer: needs structure, accountability, and safe physical engagement; avoid passive programming.
-- Seeker: needs mindfulness, nature, meaning, and grounding; avoid clinical/data-heavy experiences.
-- Optimizer: needs diagnostics, longevity, and measurable outcomes; avoid vague offerings.
-- Escapist: needs beauty, simplicity, freedom, and sensory reset; avoid intensity and rigid groups.
-- Reconnector: needs warmth, intimacy, shared experience, and soft structure; avoid isolating or cold settings.
-"""
+    City suggestion is no longer prompt-led: POST /get_suggested_city now runs
+    the deterministic property-matching engine
+    (src/core/retreat_matching_orchestrator.py) and groups real ranked
+    properties into cities instead of asking a model to invent destinations.
+    Only the itinerary/activity prompts below remain -- Step 2 of the flow
+    (POST /get_tour_plan) is unchanged. See API_CITY_FLOW_DOCS.md.
+    """
 
-    BUDGET_TIER_REFERENCE = """
-Entry = USD 30-150, Premium = USD 150-400, Luxury = USD 400-1,000,
-Ultra Luxury = USD 1,000+ per person/night.
-"""
-    # ==================== CITY SUGGESTION PROMPTS ====================
-    @staticmethod
-    def gen_city_suggestion_prompt(
-        questions_answers: QuestionAnswers,
-        preferred_destinations: Optional[str] = None,
-        hope_of_this_trip: str = "",
-    ) -> str:
-        """
-        Generate prompt to suggest cities based on user's Q&A.
-        First time flow: User answers all questions -> AI recommends best cities.
-        """
-        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
-        preferred_region = questions_answers.preferred_region or preferred_destinations
-        additional_context = ""
-        if preferred_region:
-            additional_context += f"\nPreferred region (hard constraint): {preferred_region}"
-        if hope_of_this_trip:
-            additional_context += f"\nWhat they hope to achieve: {hope_of_this_trip}"
-        prompt = f"""
-            Design a restorative or transformative wellness journey, not a generic tourist
-            recommendation. Interpret all 12 answers together, infer a primary and optional
-            secondary traveler archetype internally, then suggest the 3-5 BEST destinations.
-            USER PROFILE:
-            {qa_summary}
-            {additional_context}
-            ARCHETYPE REFERENCE (from Archetype Reference.xlsx):
-            {PromptGenerator.ARCHETYPE_REFERENCE}
-            BUDGET REFERENCE (from Budget Tier Legend.xlsx):
-            {PromptGenerator.BUDGET_TIER_REFERENCE}
-            Match against Retreat Master Database dimensions such as emotional tone, structure,
-            spirituality, physical intensity, transformation focus, emotional safety, nature,
-            modalities, archetype/solo/couple/beginner fit, nightly price, and program cost.
-            {tool_usage_rules}
-            REQUIREMENTS:
-            1. Start with the desired emotional outcome, then match tone, pace, structure,
-               environment, safe intensity, and season of life; do not merely match keywords.
-            2. Treat activity restrictions and a supplied preferred region as hard constraints.
-            3. Use the per-person/night budget tier and {questions_answers.trip_length_days}-day duration;
-               reject destinations that are financially implausible.
-            4. Use age only for pace, accessibility, and suitability; never stereotype.
-            5. Use tools with a dynamic profile search query, never a location-only generic query.
-            6. Keep the exact output template and do not expose archetype or scoring fields.
-            7. For each city, provide its real country name (to be verified).
-            RESPONSE FORMAT (JSON ONLY):
-            {{
-                "suggested_cities": [
-                    {{
-                        "city_name": "City Name",
-                        "country_name": "Country",
-                        "number_of_days": <recommended number of days>,
-                        "description": "<1-2 sentence explanation of why this city matches their profile>"
-                    }}
-                ]
-            }}
-            Respond ONLY with valid JSON, no preamble.
-            """
-        return prompt
-    @staticmethod
-    def regenerate_city_suggestion_prompt(
-        questions_answers: QuestionAnswers,
-        previous_suggestions: List[CitySuggestionInput],
-        user_instruction: str = "",
-    ) -> str:
-        """
-        Generate prompt to get different city suggestions.
-        Regenerate flow: Keep Q&A, suggest different cities (exclude previous ones).
-        """
-        qa_summary = PromptGenerator._build_qa_summary(questions_answers)
-        tool_usage_rules = PromptGenerator._build_tool_usage_guidance()
-        previous_cities = ", ".join([c.city_name for c in previous_suggestions])
-        instruction_context = ""
-        if user_instruction:
-            instruction_context = f"\nUser's additional instruction: {user_instruction}"
-        prompt = f"""
-Redesign the wellness journey rather than producing a generic city list. The user previously received:
-{previous_cities}
-Now, provide 3-5 DIFFERENT cities that still match their profile.
-USER PROFILE:
-{qa_summary}
-{instruction_context}
-{tool_usage_rules}
-IMPORTANT:
-1. Do NOT repeat: {previous_cities}
-2. Re-evaluate the complete emotional and experiential profile, not only the new instruction.
-3. Match tone, structure, intensity, nature, safety, budget tier, duration, and region.
-4. Treat restrictions and a supplied region as hard constraints.
-5. Use dynamic profile-led tool search queries.
-6. For each city, provide its real country name (to be verified).
-RESPONSE FORMAT (JSON ONLY):
-{{
-    "suggested_cities": [
-        {{
-            "city_name": "City Name",
-            "country_name": "Country",
-            "number_of_days": <recommended days>,
-            "description": "<1-2 sentence explanation>"
-        }}
-    ]
-}}
-Respond ONLY with valid JSON, no preamble.
-"""
-        return prompt
     # ==================== TOUR PLAN / ACTIVITY PROMPTS ====================
     @staticmethod
     def gen_tour_plan_prompt(
@@ -245,17 +138,6 @@ Respond ONLY with valid JSON, no preamble.
         return prompt
     # ==================== HELPER METHODS ====================
     @staticmethod
-    def _build_tool_usage_guidance() -> str:
-        """Return explicit profile-led tool-use and image guidance."""
-        return """
-TOOL USAGE:
-1. Call tools for real cities, stays, activities, restaurants, routes, and images.
-2. Build a concise dynamic `search_query` from desired outcome, archetype needs, energy,
-   environment, organization style, budget tier, and region. Do not search by location alone.
-3. Put positive needs in the query; filter restrictions after retrieval instead of searching avoided terms.
-4. Never invent or alter place data or photo IDs. The API layer resolves compact photo IDs.
-"""
-    @staticmethod
     def _build_qa_summary(qa: QuestionAnswers) -> str:
         """Build human-readable summary of Q&A."""
         budget_line = (
@@ -263,6 +145,14 @@ TOOL USAGE:
             f"(${qa.effective_total_budget:.2f} for one traveler)"
             if qa.budget_per_person_per_night is not None
             else f"${qa.effective_total_budget:.2f} total (legacy input)"
+        )
+        # birthdate is optional -- the v2 15-question flow never collects age
+        # (see src/core/legacy_profile_adapter.py), so the age line is only
+        # included when a birthdate was actually supplied.
+        age_line = (
+            f"- Age (from birthdate): {PromptGenerator._calculate_age(qa.birthdate)}\n"
+            if qa.birthdate is not None
+            else ""
         )
         return f"""
 - Current feeling: {qa.todays_feeling}
@@ -273,8 +163,7 @@ TOOL USAGE:
 - Restricted activities: {', '.join(qa.activity_restrictions) if qa.activity_restrictions else 'None'}
 - Season of life: {qa.life_season}
 - Preferred environments: {', '.join(qa.preferred_environments)}
-- Age (from birthdate): {PromptGenerator._calculate_age(qa.birthdate)}
-- Trip budget: {budget_line}
+{age_line}- Trip budget: {budget_line}
 - Trip duration: {qa.trip_length_days} days
 - Preferred region: {qa.preferred_region or 'No region constraint supplied'}
 """

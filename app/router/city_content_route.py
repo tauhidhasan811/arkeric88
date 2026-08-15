@@ -13,7 +13,7 @@ from src.session.city_session_store import CitySessionStore, ActivitySessionStor
 from src.tools.tools import get_cityinfo, get_detailed_tourist_places, get_google_hotels_sorted_by_rating, get_google_hotels_by_facilities, calculate_distance_routes_api, get_nearby_restaurants
 from src.core.image_registry import image_registry
 from src.core.geography import country_matches_region
-from src.core.retreat_catalog import find_retreat_candidates, retreat_facilities
+from src.core.retreat_catalog import find_retreat_candidates, retreat_facilities, get_retreat_by_property_id
 import re
 router = APIRouter()
 
@@ -127,19 +127,29 @@ def _find_hotel(
     num_nights: int,
     profile_search_query: str = "",
     preferred_region: str = "",
+    forced_retreat: dict | None = None,
 ) -> dict:
     """
     Find the best-rated hotel in the city that fits within the user's total budget.
     1. Call get_google_hotels_sorted_by_rating for the city
     2. Try best-rated first, then fall back to cheaper options if budget allows
     3. Returns hotel dict with name, address, rating, price_level, photos, coords
+
+    `forced_retreat`: when a caller already selected an exact catalog record via
+    a stable property_id (see BACKEND_DEVELOPER_CHANGES.md "Itinerary generation
+    must accept property_id"), pass it here to skip the fuzzy city/facility
+    search and enrich that single record with live Google Maps data instead.
     """
     nightly_budget = total_budget / max(num_nights, 1)
-    catalog_candidates = find_retreat_candidates(
-        city_name=city_name,
-        preferred_region=preferred_region,
-        facility_terms=profile_search_query,
-        nightly_budget=nightly_budget,
+    catalog_candidates = (
+        [forced_retreat]
+        if forced_retreat is not None
+        else find_retreat_candidates(
+            city_name=city_name,
+            preferred_region=preferred_region,
+            facility_terms=profile_search_query,
+            nightly_budget=nightly_budget,
+        )
     )
     for retreat in catalog_candidates:
         property_name = retreat.get("Property Name", "")
@@ -890,11 +900,24 @@ async def get_tour_plan(request_data: TourPlanRequestData):
     city_session = CitySessionStore.get(request_data.session_id)
     if city_session is None:
         raise HTTPException(status_code=404, detail="City session not found.")
+    # Resolve the destination. property_id (from POST /v2/retreat-recommendations)
+    # takes precedence over selected_city per BACKEND_DEVELOPER_CHANGES.md
+    # ("Itinerary generation must accept property_id, not only a city name.").
+    forced_retreat = None
+    city_name = request_data.selected_city
+    if request_data.property_id:
+        forced_retreat = get_retreat_by_property_id(request_data.property_id)
+        if forced_retreat is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No property found for property_id '{request_data.property_id}'.",
+            )
+        city_name = forced_retreat.get("Region") or forced_retreat.get("Property Name") or city_name
     try:
-        # Check if activity session already exists for this city (to avoid re-generation)
+        # Check if activity session already exists for this destination (to avoid re-generation)
         activity_session = ActivitySessionStore.get_by_city(
             session_id=request_data.session_id,
-            city_name=request_data.selected_city,
+            city_name=city_name,
         )
         if activity_session is not None:
             # Activities already generated -> return cached version
@@ -911,7 +934,7 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         # === STEP 1: LLM proposes activities (names, descriptions, areas, times, costs only) ===
         prompt = PromptGenerator.gen_tour_plan_prompt(
             questions_answers=city_session.questions_answers,
-            selected_city=request_data.selected_city,
+            selected_city=city_name,
             trip_length_days=city_session.questions_answers.trip_length_days,
         )
         response_text = get_ai_response(prompt)
@@ -922,7 +945,6 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         # === STEP 2a: Tool - Find hotel ===
         budget = city_session.questions_answers.effective_total_budget
         num_nights = city_session.questions_answers.trip_length_days
-        city_name = request_data.selected_city
         profile_search_query = _build_profile_search_context(city_session.questions_answers)
         hotel = _find_hotel(
             city_name,
@@ -930,6 +952,7 @@ async def get_tour_plan(request_data: TourPlanRequestData):
             num_nights,
             profile_search_query,
             city_session.questions_answers.preferred_region or "",
+            forced_retreat=forced_retreat,
         )
         hotel = _complete_hotel_values(
             hotel,
@@ -995,7 +1018,7 @@ async def get_tour_plan(request_data: TourPlanRequestData):
         # Create new activity session with enriched data
         activity_session = ActivitySessionStore.create(
             parent_session_id=request_data.session_id,
-            city_name=request_data.selected_city,
+            city_name=city_name,
             tour_plan=enriched_plan,
             response=response,
             stay_data=hotel,

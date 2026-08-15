@@ -121,9 +121,19 @@ class TourPlanDayInput(BaseModel):
 
 
 class TourPlanRequestData(BaseModel):
-    """Request payload for generating a day-wise tour plan for a chosen city."""
+    """
+    Request payload for generating a day-wise tour plan for a chosen city.
+
+    `property_id` (from POST /v2/retreat-recommendations) is now preferred over
+    `selected_city` per BACKEND_DEVELOPER_CHANGES.md ("Itinerary generation must
+    accept property_id, not only a city name."). `selected_city` is kept
+    required for backward compatibility with the legacy /get_suggested_city
+    flow; when `property_id` is supplied it takes precedence and the resolved
+    retreat's location is used instead of `selected_city`.
+    """
     session_id: str
     selected_city: str
+    property_id: Optional[str] = None
 
 
 class TourPlanInput(BaseModel):

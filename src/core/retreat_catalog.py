@@ -81,6 +81,117 @@ def _nightly_price(record: dict) -> float | None:
     return float(match.group(0).replace(",", "")) if match else None
 
 
+# ==================== V2 MATCHING HELPERS ====================
+# Stable identifiers and structured-field parsing used by the deterministic
+# retreat-matching engine (src/core/retreat_scoring.py, retreat_ranker.py).
+# The workbook has no dedicated "Property ID" column yet (see
+# BACKEND_DEVELOPER_CHANGES.md), so IDs are derived from the "#" row number,
+# which is stable for the life of a loaded workbook because load_retreat_catalog
+# is cached and the row order never changes without a code deploy.
+
+MONTH_ABBREVIATIONS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+@lru_cache(maxsize=1)
+def get_database_version() -> str:
+    """
+    Lightweight fingerprint (row count + workbook mtime) so every recommendation
+    session can record which snapshot of the retreat database produced it, per
+    BACKEND_DEVELOPER_CHANGES.md "Record the database version ... used for each
+    shortlist." This is not a substitute for a real migration/version table --
+    it is a lower-effort stand-in until the workbook is replaced by a proper
+    database with schema versioning.
+    """
+    row_count = len(load_retreat_catalog())
+    try:
+        mtime = int(WORKBOOK_PATH.stat().st_mtime)
+    except OSError:
+        mtime = 0
+    return f"retreat-master-{row_count}rows-{mtime}"
+
+
+def make_property_id(record: dict) -> str:
+    """Build a stable, human-auditable property id from the workbook row number."""
+    raw_number = re.sub(r"\D", "", str(record.get("#", "")).strip())
+    return f"retreat_{int(raw_number):03d}" if raw_number else "retreat_unknown"
+
+
+@lru_cache(maxsize=1)
+def _catalog_by_property_id() -> dict[str, dict]:
+    return {make_property_id(record): record for record in load_retreat_catalog()}
+
+
+def get_retreat_by_property_id(property_id: str) -> dict | None:
+    """Look up a single catalog record by its stable property id."""
+    return _catalog_by_property_id().get(property_id)
+
+
+def split_multi_value(raw: str) -> list[str]:
+    """Split a comma-separated workbook cell (e.g. Archetypes, Transform Focus) into tokens."""
+    return [token.strip() for token in (raw or "").split(",") if token.strip()]
+
+
+def parse_avg_night(record: dict) -> dict:
+    """
+    Parse the "Avg Night" cell into a structured, auditable shape.
+
+    Returns:
+        {
+          "amount": float | None,         # None when price is not numeric (Donation)
+          "is_lower_bound": bool,          # True for "$2,500+" style values
+          "is_donation": bool,
+          "raw": str,                      # original workbook text, always preserved
+        }
+    """
+    raw = (record.get("Avg Night") or "").strip()
+    is_donation = raw.lower().startswith("donation")
+    match = re.search(r"[\d,]+", raw)
+    amount = float(match.group(0).replace(",", "")) if match and not is_donation else None
+    return {
+        "amount": amount,
+        "is_lower_bound": "+" in raw and amount is not None,
+        "is_donation": is_donation,
+        "raw": raw,
+    }
+
+
+def parse_best_season(record: dict) -> list[int]:
+    """
+    Normalize the "Best Season" text into a sorted list of month numbers (1-12).
+
+    "Year-round" and "Monthly" both resolve to all 12 months: "Year-round" means the
+    property welcomes guests continuously, and the source "Monthly" values in this
+    workbook describe month-to-month program availability rather than a narrower
+    seasonal window, so for the purposes of a season *filter* they are equivalent.
+    The original text is never discarded by callers -- this function only produces
+    the derived month list used for matching.
+    Ranges that cross the year boundary (e.g. "Nov-Apr") are unwrapped correctly.
+    """
+    raw = (record.get("Best Season") or "").strip()
+    if not raw or raw.lower() in {"year-round", "year round", "monthly"}:
+        return list(range(1, 13))
+    months: set[int] = set()
+    for chunk in raw.split(","):
+        words = re.findall(r"[A-Za-z]+", chunk)
+        if len(words) >= 2:
+            start = MONTH_ABBREVIATIONS.get(words[0][:3].lower())
+            end = MONTH_ABBREVIATIONS.get(words[1][:3].lower())
+            if start and end:
+                if start <= end:
+                    months.update(range(start, end + 1))
+                else:
+                    months.update(range(start, 13))
+                    months.update(range(1, end + 1))
+        elif len(words) == 1:
+            single = MONTH_ABBREVIATIONS.get(words[0][:3].lower())
+            if single:
+                months.add(single)
+    return sorted(months)
+
+
 def _geography_score(record: dict, location: str) -> int:
     target = _normalize(location)
     if not target:

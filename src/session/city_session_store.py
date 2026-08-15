@@ -19,6 +19,14 @@ class CitySession:
     created_at: str
     updated_at: str
     history: List[dict] = field(default_factory=list)  # Track regenerations
+    # The original v2 15-question request (see RetreatRecommendationRequest),
+    # kept so /regenerate_suggested_city can re-run the identical deterministic
+    # matching pipeline. None for any session created before this field
+    # existed -- regenerate is not available for those (see city_content_route.py).
+    v2_request: Optional[dict] = None
+    # property_ids already surfaced to the user across generate + regenerate
+    # calls, so regeneration can exclude them and always show distinct cities.
+    shown_property_ids: List[str] = field(default_factory=list)
 
 
 class CitySessionStore:
@@ -31,6 +39,8 @@ class CitySessionStore:
         questions_answers: QuestionAnswers,
         suggested_cities: List[Any],
         response: dict,
+        v2_request: Optional[dict] = None,
+        shown_property_ids: Optional[List[str]] = None,
     ) -> CitySession:
         """
         Create a new city session.
@@ -38,7 +48,7 @@ class CitySessionStore:
         """
         session_id = str(uuid4())
         now = datetime.now(timezone.utc).isoformat()
-        
+
         session = CitySession(
             session_id=session_id,
             questions_answers=questions_answers,
@@ -51,6 +61,9 @@ class CitySessionStore:
                     city_image=city.get("city_image", []),
                     latitude=city.get("latitude"),
                     longitude=city.get("longitude"),
+                    property_id=city.get("property_id"),
+                    match_score=city.get("match_score"),
+                    warnings=city.get("warnings", []),
                 )
                 for city in suggested_cities
             ],
@@ -64,8 +77,10 @@ class CitySessionStore:
                     "suggested_cities_count": len(suggested_cities),
                 }
             ],
+            v2_request=deepcopy(v2_request) if v2_request is not None else None,
+            shown_property_ids=list(shown_property_ids or []),
         )
-        
+
         cls._sessions[session_id] = session
         return deepcopy(session)
 
@@ -84,6 +99,7 @@ class CitySessionStore:
         response: dict,
         update_field_name: str,
         user_instruction: str,
+        shown_property_ids: Optional[List[str]] = None,
     ) -> Optional[CitySession]:
         """
         Update session with new AI response (on regenerate).
@@ -104,6 +120,9 @@ class CitySessionStore:
                 city_image=city.get("city_image", []),
                 latitude=city.get("latitude"),
                 longitude=city.get("longitude"),
+                property_id=city.get("property_id"),
+                match_score=city.get("match_score"),
+                warnings=city.get("warnings", []),
             )
             for city in new_cities
         ]
@@ -112,6 +131,8 @@ class CitySessionStore:
         session.response = deepcopy(response)
         now = datetime.now(timezone.utc).isoformat()
         session.updated_at = now
+        if shown_property_ids is not None:
+            session.shown_property_ids = list(shown_property_ids)
 
         # Track regeneration in history
         session.history.append(

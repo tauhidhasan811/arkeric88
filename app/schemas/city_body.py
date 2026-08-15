@@ -31,11 +31,12 @@ class QuestionAnswers(BaseModel):
     # What environment speaks to your soul?
     preferred_environments: list[str]
 
-    # Your birthdate
-    birthdate: date
+    # Your birthdate. Optional because the v2 15-question flow (see
+    # src/core/legacy_profile_adapter.py) never collects age; it is still
+    # accepted for any client still sending the original 12-question payload.
+    birthdate: Optional[date] = None
 
     # Preferred geography from question 12 (for example: Europe or Asia).
-    # `InputData.preferred_destinations` remains supported for older clients.
     preferred_region: Optional[str] = None
 
     # Question 10 is a per-person, per-night budget. `total_trip_budget` is
@@ -69,12 +70,13 @@ class QuestionAnswers(BaseModel):
 
 
 # ==================== CITY SUGGESTION REQUEST/RESPONSE ====================
-
-class InputData(BaseModel):
-    """Input for generating city suggestions (initial Q&A flow)."""
-    questions_answers: QuestionAnswers
-    preferred_destinations: Optional[str] = None  # e.g., "beach", "mountains"
-    hope_of_this_trip: str  # e.g., "relaxation", "adventure"
+#
+# POST /get_suggested_city now takes the same 15-question payload as
+# POST /v2/retreat-recommendations (see app/schemas/retreat_v2_schema.py,
+# RetreatRecommendationRequest) instead of the old QuestionAnswers-based
+# InputData wrapper. The old wrapper has been removed since the endpoint no
+# longer asks a model to invent cities from a free-form profile -- see
+# API_CITY_FLOW_DOCS.md for the full contract.
 
 
 class RegenerateInputData(BaseModel):
@@ -143,7 +145,14 @@ class TourPlanInput(BaseModel):
 
 
 class CitySuggestionInput(BaseModel):
-    """Suggested city details."""
+    """
+    Suggested city details. `property_id` and `match_score` are populated by
+    the deterministic property-matching engine (see
+    src/core/retreat_matching_orchestrator.py): each suggested city is the
+    real, bookable property that ranked highest in that city/region, not a
+    model-invented place. Select a city by `property_id` when calling
+    POST /get_tour_plan -- see API_CITY_FLOW_DOCS.md.
+    """
     city_name: str
     country_name: str
     number_of_days: int
@@ -151,6 +160,9 @@ class CitySuggestionInput(BaseModel):
     city_image: List[str] = []
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    property_id: Optional[str] = None
+    match_score: Optional[int] = None
+    warnings: List[str] = []
 
 
 class RegenerateActivityInputData(BaseModel):

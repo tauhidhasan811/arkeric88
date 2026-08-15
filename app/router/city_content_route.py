@@ -2,18 +2,21 @@ from fastapi import APIRouter, HTTPException
 from src.core.prompt_templete import PromptGenerator
 from src.service.chat_services import get_ai_response
 from app.schemas.city_body import (
-    InputData,
     RegenerateInputData,
     RegenerateActivityInputData,
     TourPlanRequestData,
     StayInfo,
 )
+from app.schemas.retreat_v2_schema import RetreatRecommendationRequest
 from src.core.data_processor import ProcessData
 from src.session.city_session_store import CitySessionStore, ActivitySessionStore
 from src.tools.tools import get_cityinfo, get_detailed_tourist_places, get_google_hotels_sorted_by_rating, get_google_hotels_by_facilities, calculate_distance_routes_api, get_nearby_restaurants
 from src.core.image_registry import image_registry
 from src.core.geography import country_matches_region
 from src.core.retreat_catalog import find_retreat_candidates, retreat_facilities, get_retreat_by_property_id
+from src.core.legacy_profile_adapter import build_legacy_answers
+from src.core.retreat_explanation import generate_match_explanations
+from src.core.retreat_matching_orchestrator import build_ranked_pool, select_city_representatives
 import re
 router = APIRouter()
 
@@ -107,6 +110,14 @@ def _enrich_city_suggestions(suggested_cities: list, preferred_region: str = "")
 
         # country_name priority: region-valid tool value > region-valid model value
         merged_country = tool_country if tool_country else city.get("country_name")
+        passthrough = {
+            key: value
+            for key, value in city.items()
+            if key not in {
+                "city_name", "country_name", "city_image", "latitude",
+                "longitude", "number_of_days", "description",
+            }
+        }
         enriched.append({
             "city_name": city_name,
             "country_name": merged_country,
@@ -115,6 +126,7 @@ def _enrich_city_suggestions(suggested_cities: list, preferred_region: str = "")
             "longitude": tool_lng,
             "number_of_days": city.get("number_of_days"),
             "description": city.get("description", ""),
+            **passthrough,
         })
     return enriched
 
@@ -783,43 +795,88 @@ def _build_final_response(
 
 # ==================== CITY SUGGESTION FLOW ====================
 
+
+def _build_raw_city_suggestions(candidates, explanations, number_of_days: int) -> list[dict]:
+    """Turn ranked property candidates into the city-suggestion dict shape."""
+    raw_cities = []
+    for candidate in candidates:
+        explanation = explanations.get(candidate.property_id, {"match_reasons": [], "warnings": []})
+        raw_cities.append({
+            "city_name": candidate.record.get("Region", ""),
+            "country_name": candidate.record.get("Country", ""),
+            "number_of_days": number_of_days,
+            "description": " ".join(explanation["match_reasons"][:2]),
+            "property_id": candidate.property_id,
+            "match_score": round(candidate.total_score),
+            "warnings": [*candidate.warnings, *explanation["warnings"]],
+        })
+    return raw_cities
+
+
+def _enrich_city_suggestions_per_country(raw_cities: list[dict]) -> list[dict]:
+    """
+    Enrich one city at a time, using that city's own (ground-truth) country as
+    the region hint/hard-constraint for _enrich_city_suggestions, since a
+    single v2 session can suggest cities across several different countries
+    (unlike the old flow, which had one preferred_region for the whole batch).
+    """
+    enriched = []
+    for city in raw_cities:
+        enriched.extend(_enrich_city_suggestions([city], preferred_region=city["country_name"]))
+    return enriched
+
+
+def _build_city_suggestion_response(
+    enriched_cities: list[dict],
+    ranking,
+    profile,
+) -> dict:
+    return {
+        "suggested_cities": enriched_cities,
+        "excluded_count": ranking.excluded_count,
+        "total_candidate_count": ranking.total_candidate_count,
+        "data_gaps": ranking.data_gaps,
+        "extracted_restrictions": {
+            "codes": profile.restrictions.codes,
+            "accessibility_needs": profile.restrictions.accessibility_needs,
+            "unresolved_text": profile.restrictions.unresolved_text,
+        },
+    }
+
+
 @router.post("/get_suggested_city")
 
 
-async def get_suggested_city(input_data: InputData):
+async def get_suggested_city(request: RetreatRecommendationRequest):
     """
-    GENERATE: First time user answers questions -> get city suggestions.
-    - Stores Q&A and city suggestion in session.
-    - Returns session_id for future regenerate calls.
+    GENERATE: run the deterministic property-matching engine (identical
+    pipeline to POST /v2/retreat-recommendations) against the 15-question
+    profile, then group the ranked properties into city-level suggestions --
+    the single best-scoring, real, bookable property per distinct city.
+    Stores the profile and shown property_ids in session for regenerate and
+    for Step 2 (POST /get_tour_plan, unchanged). See API_CITY_FLOW_DOCS.md.
     """
     try:
-        # Persist the legacy top-level region inside the 12-answer profile so
-        # regeneration and itinerary generation retain the same hard constraint.
-        questions_answers = input_data.questions_answers
-        if not questions_answers.preferred_region and input_data.preferred_destinations:
-            questions_answers = questions_answers.model_copy(
-                update={"preferred_region": input_data.preferred_destinations}
-            )
-        prompt = PromptGenerator.gen_city_suggestion_prompt(
-            questions_answers=questions_answers,
-            preferred_destinations=input_data.preferred_destinations,
-            hope_of_this_trip=input_data.hope_of_this_trip,
+        profile, ranking = build_ranked_pool(request)
+        representatives = select_city_representatives(ranking.ranked, limit=5)
+        explanations = generate_match_explanations(representatives)
+
+        raw_cities = _build_raw_city_suggestions(
+            representatives, explanations, profile.duration_nights_estimate
         )
-        # Call AI to get city suggestions
-        response_text = get_ai_response(prompt)
-        response = _parse_ai_response(response_text)
-        # Enrich LLM suggestions with real data from get_cityinfo tool
-        raw_cities = response.get("suggested_cities", [])
-        enriched_cities = _enrich_city_suggestions(
-            raw_cities, questions_answers.preferred_region or ""
-        )
-        # Replace LLM-only output with enriched version in the response dict
-        response["suggested_cities"] = enriched_cities
-        # Create session and store Q&A + enriched suggestions
+        enriched_cities = _enrich_city_suggestions_per_country(raw_cities)
+        response = _build_city_suggestion_response(enriched_cities, ranking, profile)
+
+        # The itinerary/activity pipeline (Step 2) still runs on the legacy
+        # QuestionAnswers shape -- see src/core/legacy_profile_adapter.py.
+        legacy_answers = build_legacy_answers(request, profile)
+
         session = CitySessionStore.create(
-            questions_answers=questions_answers,
+            questions_answers=legacy_answers,
             suggested_cities=enriched_cities,
             response=response,
+            v2_request=request.model_dump(mode="json"),
+            shown_property_ids=[city["property_id"] for city in raw_cities],
         )
         return {
             "session_id": session.session_id,
@@ -834,44 +891,52 @@ async def get_suggested_city(input_data: InputData):
 
 async def regenerate_suggested_city(regenerate_data: RegenerateInputData):
     """
-    REGENERATE: User wants different city suggestions (same Q&A, new suggestions).
-    - Retrieves previous Q&A from session.
-    - Calls AI again (optionally excluding previous suggestions).
-    - Overwrites suggested_cities in session.
-    - Keeps Q&A history intact.
+    REGENERATE: re-run the same deterministic matching pipeline for the same
+    profile, excluding every property already shown in this session, and
+    surface the next best distinct cities. Ranking is deterministic, so this
+    never needs another model call to pick different cities.
     """
-    # Fetch existing session
     session = CitySessionStore.get(regenerate_data.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
+    if not session.v2_request:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This session predates the property-matching questionnaire and has no "
+                "stored v2 profile, so it cannot be regenerated. Start a new session "
+                "with POST /get_suggested_city."
+            ),
+        )
     try:
-        # Build regenerate prompt using stored Q&A
-        prompt = PromptGenerator.regenerate_city_suggestion_prompt(
-            questions_answers=session.questions_answers,
-            previous_suggestions=session.suggested_cities,
-            user_instruction=regenerate_data.user_instruction,
+        request = RetreatRecommendationRequest(**session.v2_request)
+        profile, ranking = build_ranked_pool(request)
+        already_shown = set(session.shown_property_ids)
+        representatives = select_city_representatives(
+            ranking.ranked, exclude_property_ids=already_shown, limit=5
         )
-        # Call AI for new suggestions
-        response_text = get_ai_response(prompt)
-        generated_response = _parse_ai_response(response_text)
-        # Enrich new LLM suggestions with real data from get_cityinfo tool
-        raw_cities = generated_response.get("suggested_cities", [])
-        enriched_cities = _enrich_city_suggestions(
-            raw_cities, session.questions_answers.preferred_region or ""
+        if not representatives:
+            raise HTTPException(
+                status_code=404,
+                detail="No further distinct cities are available for this profile.",
+            )
+        explanations = generate_match_explanations(representatives)
+
+        raw_cities = _build_raw_city_suggestions(
+            representatives, explanations, profile.duration_nights_estimate
         )
-        generated_response["suggested_cities"] = enriched_cities
-        # Merge new suggestions into response
-        response = _merge_regenerated_field(
-            previous_response=session.response,
-            generated_response=generated_response,
-            update_field_name="suggested_cities",
-        )
-        # Update session with new suggestions
+        enriched_cities = _enrich_city_suggestions_per_country(raw_cities)
+        response = _build_city_suggestion_response(enriched_cities, ranking, profile)
+
         updated_session = CitySessionStore.update_response(
             session_id=regenerate_data.session_id,
             response=response,
             update_field_name="suggested_cities",
             user_instruction=regenerate_data.user_instruction or "",
+            shown_property_ids=[
+                *session.shown_property_ids,
+                *(city["property_id"] for city in raw_cities),
+            ],
         )
         if updated_session is None:
             raise HTTPException(status_code=404, detail="Session not found.")
@@ -880,6 +945,8 @@ async def regenerate_suggested_city(regenerate_data: RegenerateInputData):
             "suggested_cities": updated_session.suggested_cities,
             "response": updated_session.response,
         }
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
 
